@@ -1,0 +1,34 @@
+services:
+
+  flink:
+    image: funktionslust/flink:latest
+    environment:
+      # Option 1: Use inline mappings
+      - REDIRECT_MAPPINGS=test=https://example.com;demo=https://google.com,status=302
+      # Option 2: Use file path (uncomment below and comment above)
+      # - REDIRECT_MAPPINGS=/app/redirects.txt
+    # volumes:
+      # - ./redirects.txt:/app/redirects.txt:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.flink.rule=Host(`links.example.com`)"
+      - "traefik.http.routers.flink.entrypoints=websecure"
+      - "traefik.http.routers.flink.tls.certresolver=letsencrypt"
+      - "traefik.http.services.flink.loadbalancer.server.port=8080"
+      # HTTP to HTTPS redirect
+      - "traefik.http.routers.flink-http.rule=Host(`links.example.com`)"
+      - "traefik.http.routers.flink-http.entrypoints=web"
+      - "traefik.http.routers.flink-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      
+      # Example: Path prefix with stripping to serve fLINK under /foo/ path with stripping
+      # - "traefik.http.routers.flink.rule=Host(`links.example.com`) && PathPrefix(`/foo`)"
+      # - "traefik.http.routers.flink.middlewares=flink-stripprefix,flink-headers"
+      # - "traefik.http.middlewares.flink-stripprefix.stripprefix.prefixes=/foo"
+    networks:
+      - traefik
+    restart: unless-stopped
+
+networks:
+  traefik:
+    external: true

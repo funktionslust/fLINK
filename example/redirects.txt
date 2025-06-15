@@ -1,0 +1,3 @@
+foo=https://a.com/x
+bar=https://b.com/u/profile,status=302
+baz=https://c.net/z,status=307

@@ -1,0 +1,13 @@
+services:
+  flink:
+    image: funktionslust/flink:latest
+    ports:
+      - "8080:8080"
+    environment:
+      # Option 1: Use inline mappings
+      - REDIRECT_MAPPINGS=test=https://example.com;demo=https://google.com,status=302
+      # Option 2: Use file path (changes are detected and applied automatically)
+      # - REDIRECT_MAPPINGS=/app/redirects.txt
+    # volumes:
+      # - ./redirects.txt:/app/redirects.txt:ro
+    restart: unless-stopped

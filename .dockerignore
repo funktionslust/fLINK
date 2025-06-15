@@ -1,0 +1,38 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+LICENSE
+
+# Example files
+example/
+
+# Test files
+*_test.go
+coverage.out
+coverage.html
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.goreleaser.yml
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.out
+*.test
+flink
+
+# Logo (not needed in container)
+logo.svg
