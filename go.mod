@@ -1,4 +1,4 @@
-module github.com/funktionslust/flink
+module github.com/funktionslust/fLINK
 
 go 1.24
 

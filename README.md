@@ -53,14 +53,14 @@ docker run -p 8080:8080 -e REDIRECT_MAPPINGS="test=https://example.com" funktion
 ### Using Go
 
 ```bash
-go install github.com/funktionslust/flink@latest
+go install github.com/funktionslust/fLINK@latest
 ```
 
 ### Building from Source
 
 ```bash
-git clone https://github.com/funktionslust/flink.git
-cd flink
+git clone https://github.com/funktionslust/fLINK.git
+cd fLINK
 go build -o flink main.go
 ```
 
@@ -222,9 +222,9 @@ Current test coverage: **83.7%** with 25+ test functions covering:
 ## Publishing & Distribution
 
 ### GitHub Repository
-- **Source Code**: [github.com/funktionslust/flink](https://github.com/funktionslust/flink)
-- **Issues & Support**: [GitHub Issues](https://github.com/funktionslust/flink/issues)
-- **Releases**: [GitHub Releases](https://github.com/funktionslust/flink/releases)
+- **Source Code**: [github.com/funktionslust/fLINK](https://github.com/funktionslust/fLINK)
+- **Issues & Support**: [GitHub Issues](https://github.com/funktionslust/fLINK/issues)
+- **Releases**: [GitHub Releases](https://github.com/funktionslust/fLINK/releases)
 
 ### Docker Hub
 - **Registry**: [hub.docker.com/r/funktionslust/flink](https://hub.docker.com/r/funktionslust/flink)

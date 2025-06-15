@@ -83,5 +83,5 @@ release:
     
     ### Go Install
     ```bash
-    go install github.com/funktionslust/flink@{{.Version}}
+    go install github.com/funktionslust/fLINK@{{.Version}}
     ```

@@ -27,7 +27,6 @@ type redirectRule struct {
 	status int    // HTTP status code (301, 302, 303, 307, 308)
 }
 
-
 var (
 	// rulesMu protects concurrent access to the rules map
 	rulesMu sync.RWMutex
@@ -211,7 +210,7 @@ func watchFileForChanges(path string, interval time.Duration) {
 		return
 	}
 	lastMod := stat.ModTime()
-	
+
 	for {
 		time.Sleep(interval)
 		stat, err := os.Stat(path)
@@ -254,7 +253,7 @@ func parseAndSetMappings(data string) {
 	rulesMu.Lock()
 	rules = newRules
 	rulesMu.Unlock()
-	
+
 	// Log loaded rules
 	log.Printf("Loaded %d redirect rule(s):", len(newRules))
 	for id, rule := range newRules {
@@ -376,7 +375,7 @@ func getPathPrefix(r *http.Request) string {
 func logAccess(r *http.Request, status int, duration time.Duration, logType, destination, errorMsg string) {
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 	remoteAddr := getRemoteAddr(r)
-	
+
 	// Build log message based on type
 	var logMsg string
 	switch logType {
@@ -393,7 +392,7 @@ func logAccess(r *http.Request, status int, duration time.Duration, logType, des
 		logMsg = fmt.Sprintf("[%s] %s %s %s (%d) %s",
 			timestamp, remoteAddr, r.Method, r.URL.Path, status, duration)
 	}
-	
+
 	log.Println(logMsg)
 }
 
