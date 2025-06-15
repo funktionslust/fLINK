@@ -6,7 +6,7 @@ A lightweight HTTP redirect service with dynamic configuration support.
 
 ## Description
 
-fLINK is a minimalistic redirect service that maps short IDs to full URLs. It supports both file-based and environment-based configuration with hot reloading capabilities. Perfect for URL shortening, link management, or redirect proxying.
+fLINK is a minimalistic redirect service that maps short codes to full URLs. It supports both file-based and environment-based configuration with hot reloading capabilities. Perfect for URL shortening, link management, or redirect proxying.
 
 ## Features
 
@@ -17,7 +17,7 @@ fLINK is a minimalistic redirect service that maps short IDs to full URLs. It su
 - **QR Code Generation**: Generate QR codes for any redirect by adding `/qr` suffix
 - **Structured Logging**: Clear access logs with detailed request information
 - **Thread-Safe**: Concurrent request handling with safe configuration updates
-- **Input Validation**: Secure handling of IDs and URLs
+- **Input Validation**: Secure handling of short codes and URLs
 - **Reverse Proxy Support**: Proper hostname detection from proxy headers
 
 ## Why Choose fLINK Over Alternatives?
@@ -50,6 +50,15 @@ docker pull funktionslust/flink:latest
 docker run -p 8080:8080 -e REDIRECT_MAPPINGS="test=https://example.com" funktionslust/flink
 ```
 
+Test the redirect:
+```bash
+curl -I "http://localhost:8080/test?foo=123"
+
+HTTP/1.1 302 Found
+Content-Type: text/html; charset=utf-8
+Location: https://example.com?foo=123
+```
+
 ### Using Go
 
 ```bash
@@ -73,7 +82,7 @@ go build -o flink main.go
 
 ### Configuration Format
 
-Mappings use the format `key=url` or `key=url,status=code`:
+Mappings use the format `code=url` or `code=url,status=code`:
 
 ```
 home=https://example.com
@@ -114,7 +123,7 @@ services:
 
 ### Making Requests
 
-Once running, access redirects at `http://localhost:8080/{key}`:
+Once running, access redirects at `http://localhost:8080/{code}`:
 
 ```bash
 curl -I http://localhost:8080/test  # Redirects to https://example.com
@@ -179,10 +188,10 @@ fLINK outputs structured access logs for all requests:
 ```
 [2025-06-15T19:24:54Z] 203.0.113.1 GET /test → https://example.com (301) 500ns
 [2025-06-15T19:25:03Z] 203.0.113.1 GET /test/qr → QR:https://example.com/test (200) 3.2ms
-[2025-06-15T19:25:15Z] 203.0.113.2 GET /invalid ERROR: Invalid redirect ID (400) 250ns
+[2025-06-15T19:25:15Z] 203.0.113.2 GET /invalid ERROR: Invalid short code (400) 250ns
 ```
 
-On startup, fLINK displays all loaded redirect rules:
+fLINK displays all loaded redirect rules on startup and when configuration changes:
 ```
 2025/06/15 19:24:50 Loaded 3 redirect rule(s):
 2025/06/15 19:24:50   home → https://example.com (status: 301)
@@ -192,11 +201,11 @@ On startup, fLINK displays all loaded redirect rules:
 
 ## Security
 
-- Only accepts GET requests
-- Validates IDs (alphanumeric, hyphens, underscores only)
+- Only accepts GET and HEAD requests
+- Validates short codes (alphanumeric, hyphens, underscores only)
 - Validates URLs must start with http:// or https://
 - Restricts redirect status codes to standard values
-- Limits ID length to 256 characters
+- Limits short code length to 256 characters
 - Limits URL length to 2048 characters
 - Proper handling of reverse proxy headers
 - No external dependencies except QR code library
@@ -212,7 +221,7 @@ go test -coverprofile=coverage.out  # Generate coverage report
 ```
 
 Current test coverage: **83.7%** with 25+ test functions covering:
-- Input validation (IDs, URLs, status codes)
+- Input validation (short codes, URLs, status codes)
 - Configuration parsing and file loading
 - HTTP request handling (redirects, QR codes, errors)
 - Concurrent access and thread safety
