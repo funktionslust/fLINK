@@ -3,10 +3,15 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,48 +28,350 @@ var (
 
 // redirectRule represents a single redirect mapping with destination URL and HTTP status code.
 type redirectRule struct {
-	url    string // Destination URL
-	status int    // HTTP status code (301, 302, 303, 307, 308)
+	url       string // Destination URL
+	status    int    // HTTP status code (301, 302, 303, 307, 308)
+	isPattern bool   // Whether this rule uses wildcard matching
+	prefix    string // The prefix part before * (for pattern matching)
+	path      string // Full path pattern (for sorting by specificity)
+}
+
+// BuildDestination constructs the final destination URL with wildcard replacement
+func (r redirectRule) BuildDestination(suffix string) string {
+	if !r.isPattern || suffix == "" {
+		return r.url
+	}
+	if !strings.Contains(r.url, "*") {
+		return r.url // Drop suffix if no wildcard in destination
+	}
+	// Normalize suffix to avoid double slashes
+	if strings.HasSuffix(r.url, "/*") && strings.HasPrefix(suffix, "/") {
+		suffix = suffix[1:]
+	}
+	return strings.Replace(r.url, "*", suffix, -1)
+}
+
+// RuleSet manages both exact and pattern-based redirect rules
+type RuleSet struct {
+	mu       sync.RWMutex
+	exact    map[string]redirectRule
+	patterns []redirectRule
+}
+
+// Match finds a matching rule for the given path
+func (rs *RuleSet) Match(path string) (redirectRule, bool, string) {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+
+	// Check exact matches first
+	if rule, ok := rs.exact[path]; ok {
+		return rule, true, ""
+	}
+
+	// Check pattern rules
+	fullPath := "/" + path
+	for _, rule := range rs.patterns {
+		if strings.HasPrefix(fullPath, rule.prefix) {
+			suffix := strings.TrimPrefix(fullPath, rule.prefix)
+			if rule.prefix == "/" {
+				suffix = fullPath // For root wildcard, keep full path
+			}
+			return rule, true, suffix
+		}
+	}
+
+	return redirectRule{}, false, ""
+}
+
+// Update atomically replaces all rules
+func (rs *RuleSet) Update(exact map[string]redirectRule, patterns []redirectRule) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.exact = exact
+	rs.patterns = patterns
+}
+
+// config holds all application configuration
+type config struct {
+	port               string
+	mappingSource      string
+	forwardQueryParams bool
+	trustedProxies     string // Comma-separated CIDR ranges of trusted proxies
 }
 
 var (
-	// rulesMu protects concurrent access to the rules map
-	rulesMu sync.RWMutex
-	// rules stores all active redirect mappings
-	rules = map[string]redirectRule{}
+	// ruleSet manages all redirect rules
+	ruleSet = &RuleSet{
+		exact: make(map[string]redirectRule),
+	}
+	// cfg holds the application configuration
+	cfg config
+	// trustedProxyChecker manages trusted proxy validation
+	trustedProxyChecker struct {
+		once sync.Once
+		mu   sync.RWMutex
+		nets []*net.IPNet
+	}
 )
 
 // main initializes the redirect service and starts the HTTP server.
 func main() {
-	// Check for version flag
-	if len(os.Args) > 1 && (os.Args[1] == "-version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
+	// Define command-line flags
+	var (
+		portFlag          = flag.String("port", "", "Server port")
+		mappingsFlag      = flag.String("mappings", "", "File path, URL, or inline mappings")
+		forwardParamsFlag = flag.Bool("forward-query-params", true, "Forward query parameters to destination")
+		versionFlag       = flag.Bool("version", false, "Show version information")
+		helpFlag          = flag.Bool("help", false, "Show help message")
+	)
+
+	// Custom usage message
+	flag.Usage = func() {
+		printHelp()
+	}
+
+	// Parse flags
+	flag.Parse()
+
+	// Handle version and help flags
+	if *helpFlag {
+		printHelp()
+		os.Exit(0)
+	}
+
+	if *versionFlag {
 		fmt.Printf("fLINK %s (commit: %s, built: %s)\n", version, commit, date)
 		os.Exit(0)
 	}
 
 	printBanner()
 
-	mappingSource := os.Getenv("REDIRECT_MAPPINGS")
-	if mappingSource == "" {
-		log.Fatal("REDIRECT_MAPPINGS environment variable is required")
+	// Load configuration (CLI flags override environment variables)
+	cfg = loadConfig(*portFlag, *mappingsFlag, *forwardParamsFlag)
+	printConfig()
+
+	// Initialize tracking system
+	initTracking()
+
+	// Initialize trusted proxy networks
+	if err := initTrustedProxies(cfg.trustedProxies); err != nil {
+		log.Printf("Warning: Failed to parse trusted proxies: %v", err)
 	}
 
-	// Determine if mapping source is a file or inline configuration
-	if fileInfo, err := os.Stat(mappingSource); err == nil && !fileInfo.IsDir() {
-		log.Printf("Watching file for changes: %s", mappingSource)
-		loadFileMappings(mappingSource) // Initial load
-		go watchFileForChanges(mappingSource, 5*time.Second)
+	// Determine mapping source type
+	if strings.HasPrefix(cfg.mappingSource, "http://") || strings.HasPrefix(cfg.mappingSource, "https://") {
+		log.Printf("Loading mappings from URL: %s", cfg.mappingSource)
+		loadHTTPMappings(cfg.mappingSource) // Initial load
+		go watchHTTPForChanges(cfg.mappingSource, 10*time.Minute)
+	} else if fileInfo, err := os.Stat(cfg.mappingSource); err == nil && !fileInfo.IsDir() {
+		log.Printf("Watching file for changes: %s", cfg.mappingSource)
+		loadFileMappings(cfg.mappingSource) // Initial load
+		go watchFileForChanges(cfg.mappingSource, 5*time.Second)
 	} else {
 		log.Printf("Loading static mappings from environment variable")
-		loadInlineMappings(mappingSource)
+		loadInlineMappings(cfg.mappingSource)
 	}
 
 	// Configure HTTP handlers
 	http.HandleFunc("/", handleRequest)
 
-	port := getEnv("PORT", "8080")
-	log.Printf("Listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	log.Printf("Listening on :%s", cfg.port)
+	log.Fatal(http.ListenAndServe(":"+cfg.port, nil))
+}
+
+// loadConfig loads configuration from CLI flags and environment variables
+// CLI flags take precedence over environment variables
+func loadConfig(portFlag, mappingsFlag string, forwardParamsFlag bool) config {
+	c := config{}
+
+	// Port: CLI flag > env var > default
+	if portFlag != "" {
+		c.port = portFlag
+	} else {
+		c.port = getEnv("PORT", "8080")
+	}
+
+	// Mappings: CLI flag > env var
+	if mappingsFlag != "" {
+		c.mappingSource = mappingsFlag
+	} else {
+		c.mappingSource = os.Getenv("REDIRECT_MAPPINGS")
+	}
+
+	// Forward query params: CLI flag takes precedence if explicitly set
+	// Note: flag.Bool always returns a value, so we need to check if it was actually set
+	if flagWasSet("forward-query-params") {
+		c.forwardQueryParams = forwardParamsFlag
+	} else {
+		c.forwardQueryParams = getEnvBool("FORWARD_QUERY_PARAMS", true)
+	}
+
+	// Trusted proxies: comma-separated CIDR ranges
+	c.trustedProxies = os.Getenv("TRUSTED_PROXIES")
+	if c.trustedProxies == "" {
+		// Default to common private network ranges
+		c.trustedProxies = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128"
+	}
+
+	if c.mappingSource == "" {
+		log.Fatal("Redirect mappings are required. Use -mappings flag or REDIRECT_MAPPINGS environment variable")
+	}
+
+	return c
+}
+
+// flagWasSet checks if a flag was explicitly set on the command line
+func flagWasSet(name string) bool {
+	found := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
+}
+
+// printConfig displays the current configuration
+func printConfig() {
+	log.Println("Configuration:")
+	log.Printf("  Port: %s", cfg.port)
+	log.Printf("  Forward Query Parameters: %v", cfg.forwardQueryParams)
+	log.Printf("  Trusted Proxies: %s", cfg.trustedProxies)
+
+	// Show tracking status
+	if tracker != nil && tracker.IsEnabled() {
+		log.Printf("  Analytics: %s enabled", tracker.Name())
+	} else {
+		log.Printf("  Analytics: disabled")
+	}
+}
+
+// printHelp displays usage information
+func printHelp() {
+	fmt.Printf(`fLINK %s - Simple, Fast URL Redirector
+
+USAGE:
+  flink [options]
+
+OPTIONS:
+  -help                    Show this help message
+  -version                 Show version information
+  -port PORT               Server port (default: 8080)
+  -mappings PATH|URL|DATA  File path, URL, or inline mappings (required)
+  -forward-query-params    Forward query parameters to destination (default: true)
+
+ENVIRONMENT VARIABLES:
+  REDIRECT_MAPPINGS        File path, URL, or inline mappings
+  PORT                     Server port
+  FORWARD_QUERY_PARAMS     Forward query parameters to destination
+  MATOMO_URL               Matomo analytics URL (optional)
+  MATOMO_TOKEN             Matomo API token (optional)
+
+All environment variables support _FILE suffix for Docker secrets.
+CLI flags take precedence over environment variables.
+
+EXAMPLES:
+  # Using CLI flags
+  flink -mappings /etc/flink/redirects.txt -port 8080
+  
+  # Inline mappings via CLI
+  flink -mappings "shop=https://store.com;docs=https://docs.com"
+  
+  # Remote configuration via CLI
+  flink -mappings https://config.example.com/redirects.txt
+  
+  # Disable query parameter forwarding
+  flink -mappings redirects.txt -forward-query-params=false
+
+  # Using environment variables
+  REDIRECT_MAPPINGS=/etc/flink/redirects.txt PORT=8080 flink
+
+For more information, visit: https://github.com/funktionslust/fLINK
+`, version)
+}
+
+// getEnvBool reads a boolean environment variable with a default value
+func getEnvBool(key string, defaultValue bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	return value == "true" || value == "1" || value == "yes"
+}
+
+// initTrustedProxies initializes trusted proxy validation (called once at startup)
+func initTrustedProxies(ranges string) error {
+	var err error
+	trustedProxyChecker.once.Do(func() {
+		err = parseTrustedProxies(ranges)
+	})
+	return err
+}
+
+// parseTrustedProxies parses CIDR ranges for trusted proxy validation
+func parseTrustedProxies(ranges string) error {
+	var nets []*net.IPNet
+
+	if ranges == "" {
+		return nil
+	}
+
+	for _, cidr := range strings.Split(ranges, ",") {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			// Try parsing as single IP
+			ip := net.ParseIP(cidr)
+			if ip == nil {
+				return fmt.Errorf("invalid CIDR or IP: %s", cidr)
+			}
+			// Convert single IP to CIDR
+			if ip.To4() != nil {
+				_, ipNet, _ = net.ParseCIDR(cidr + "/32")
+			} else {
+				_, ipNet, _ = net.ParseCIDR(cidr + "/128")
+			}
+		}
+		nets = append(nets, ipNet)
+	}
+
+	trustedProxyChecker.mu.Lock()
+	trustedProxyChecker.nets = nets
+	trustedProxyChecker.mu.Unlock()
+
+	return nil
+}
+
+// isTrustedProxy checks if the request comes from a trusted proxy
+func isTrustedProxy(remoteAddr string) bool {
+	trustedProxyChecker.mu.RLock()
+	nets := trustedProxyChecker.nets
+	trustedProxyChecker.mu.RUnlock()
+
+	if len(nets) == 0 {
+		return false
+	}
+
+	// Extract IP from remote address (remove port)
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr // Fallback if no port
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+
+	for _, trustedNet := range nets {
+		if trustedNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // setCommonHeaders adds standard security and informational headers to all responses.
@@ -109,33 +416,53 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 
 // handleRedirect processes redirect requests based on configured rules.
 func handleRedirect(w http.ResponseWriter, r *http.Request, id string, start time.Time) {
-	// Validate ID contains only safe characters
-	if !isValidID(id) {
-		logAccess(r, 400, time.Since(start), "error", "", "Invalid redirect ID")
-		http.Error(w, "Invalid redirect ID", http.StatusBadRequest)
+	// Validate path contains only safe characters
+	if !isValidPathSegment(id) {
+		logAccess(r, 400, time.Since(start), "error", "", "Invalid redirect path")
+		http.Error(w, "Invalid redirect path", http.StatusBadRequest)
 		return
 	}
 
-	// Thread-safe lookup of redirect rule
-	rulesMu.RLock()
-	rule, ok := rules[id]
-	rulesMu.RUnlock()
-
+	// Find matching rule using RuleSet
+	rule, ok, suffix := ruleSet.Match(id)
 	if !ok {
 		logAccess(r, 404, time.Since(start), "error", "", "Redirect rule not found")
 		http.NotFound(w, r)
 		return
 	}
 
-	// Build destination URL with query parameters forwarded
-	dest := rule.url
-	if r.URL.RawQuery != "" {
-		// Add query parameters to destination URL
-		separator := "?"
-		if strings.Contains(dest, "?") {
-			separator = "&"
+	// Build destination URL with wildcard suffix replacement
+	dest := rule.BuildDestination(suffix)
+
+	// Handle query parameter forwarding
+	if cfg.forwardQueryParams && r.URL.RawQuery != "" {
+		// Parse destination URL properly
+		destURL, err := url.Parse(dest)
+		if err != nil {
+			logAccess(r, 500, time.Since(start), "error", "", "Invalid destination URL")
+			http.Error(w, "Invalid redirect destination", http.StatusInternalServerError)
+			return
 		}
-		dest = dest + separator + r.URL.RawQuery
+
+		// Parse incoming query parameters
+		incomingParams, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil {
+			logAccess(r, 400, time.Since(start), "error", "", "Invalid query parameters")
+			http.Error(w, "Invalid query parameters", http.StatusBadRequest)
+			return
+		}
+
+		// Merge query parameters (incoming params override existing ones)
+		existingParams := destURL.Query()
+		for key, values := range incomingParams {
+			for _, value := range values {
+				existingParams.Add(key, value)
+			}
+		}
+
+		// Update the URL with merged parameters
+		destURL.RawQuery = existingParams.Encode()
+		dest = destURL.String()
 	}
 
 	// Validate destination URL for basic security
@@ -146,6 +473,13 @@ func handleRedirect(w http.ResponseWriter, r *http.Request, id string, start tim
 	}
 
 	logAccess(r, rule.status, time.Since(start), "redirect", dest, "")
+
+	// Track redirect event
+	trackEvent(r, "redirect", id, dest)
+
+	// Perform the redirect
+	// Note: HTTP redirects naturally preserve the original referer (not the redirect server)
+	// The preserveReferer option would only be needed if we wanted to CHANGE this behavior
 	http.Redirect(w, r, dest, rule.status)
 }
 
@@ -159,10 +493,7 @@ func handleQRCode(w http.ResponseWriter, r *http.Request, id string, start time.
 	}
 
 	// Check if redirect rule exists
-	rulesMu.RLock()
-	_, ok := rules[id]
-	rulesMu.RUnlock()
-
+	_, ok, _ := ruleSet.Match(id)
 	if !ok {
 		logAccess(r, 404, time.Since(start), "error", "", "QR code rule not found")
 		http.NotFound(w, r)
@@ -231,10 +562,49 @@ func loadInlineMappings(data string) {
 	parseAndSetMappings(data)
 }
 
+// loadHTTPMappings fetches redirect rules from an HTTP/HTTPS URL.
+func loadHTTPMappings(url string) {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		log.Printf("Error fetching mappings from URL: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Error fetching mappings: HTTP %d", resp.StatusCode)
+		return
+	}
+
+	content, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Error reading mappings response: %v", err)
+		return
+	}
+
+	parseAndSetMappings(string(content))
+}
+
+// watchHTTPForChanges periodically fetches mappings from an HTTP/HTTPS URL.
+func watchHTTPForChanges(url string, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		log.Printf("Refreshing mappings from URL: %s", url)
+		loadHTTPMappings(url)
+	}
+}
+
 // parseAndSetMappings parses configuration data and atomically updates the active rules.
 // Supports both newline and semicolon separated entries, with comment support.
 func parseAndSetMappings(data string) {
 	newRules := make(map[string]redirectRule)
+	var newPatternRules []redirectRule
 
 	// Parse both newline and semicolon separated entries
 	lines := strings.Split(data, "\n")
@@ -245,74 +615,150 @@ func parseAndSetMappings(data string) {
 			if entry == "" || strings.HasPrefix(entry, "#") {
 				continue
 			}
-			parseMappingLine(entry, newRules)
+			rule, ok := parseMappingLine(entry)
+			if !ok {
+				continue // Skip invalid rules
+			}
+			if rule.isPattern {
+				newPatternRules = append(newPatternRules, rule)
+			} else {
+				newRules[rule.path] = rule
+			}
 		}
 	}
 
-	// Atomically replace all rules
-	rulesMu.Lock()
-	rules = newRules
-	rulesMu.Unlock()
+	// Sort pattern rules by specificity (longest prefix first)
+	sort.Slice(newPatternRules, func(i, j int) bool {
+		// Longer prefixes match first (more specific)
+		if len(newPatternRules[i].prefix) != len(newPatternRules[j].prefix) {
+			return len(newPatternRules[i].prefix) > len(newPatternRules[j].prefix)
+		}
+		// If same length, alphabetical order for consistency
+		return newPatternRules[i].prefix < newPatternRules[j].prefix
+	})
+
+	// Atomically update all rules
+	ruleSet.Update(newRules, newPatternRules)
 
 	// Log loaded rules
-	log.Printf("Loaded %d redirect rule(s):", len(newRules))
+	totalRules := len(newRules) + len(newPatternRules)
+	log.Printf("Loaded %d redirect rule(s) (%d exact, %d patterns):", totalRules, len(newRules), len(newPatternRules))
 	for id, rule := range newRules {
 		log.Printf("  %s → %s (status: %d)", id, rule.url, rule.status)
+	}
+	for _, rule := range newPatternRules {
+		log.Printf("  %s → %s (status: %d) [pattern]", rule.path, rule.url, rule.status)
 	}
 }
 
 // parseMappingLine parses a single mapping line in the format "key=url" or "key=url,status=code".
-func parseMappingLine(line string, rules map[string]redirectRule) {
+// Supports wildcard patterns with * for suffix matching.
+// Returns the parsed rule and whether it's a pattern rule.
+func parseMappingLine(line string) (redirectRule, bool) {
 	parts := strings.SplitN(line, "=", 2)
 	if len(parts) != 2 {
 		log.Printf("Invalid mapping format: %s", line)
-		return
+		return redirectRule{}, false
 	}
 
 	key := strings.TrimSpace(parts[0])
 	val := strings.TrimSpace(parts[1])
 
-	// Validate key is not empty and contains safe characters
-	if key == "" || !isValidID(key) {
-		log.Printf("Invalid mapping key: %s", key)
-		return
+	// Check if this is a wildcard pattern
+	isPattern := strings.Contains(key, "*")
+	prefix := ""
+
+	if isPattern {
+		// For wildcard patterns, extract the prefix
+		if key == "*" || key == "/*" {
+			prefix = "/" // Root wildcard catches everything
+		} else if strings.HasSuffix(key, "/*") {
+			prefix = "/" + strings.TrimSuffix(key, "*") // Ensure leading slash for path patterns
+		} else {
+			log.Printf("Invalid wildcard pattern: %s (wildcards only supported at end of path)", key)
+			return redirectRule{}, false
+		}
+	} else {
+		// Validate exact match key contains safe characters
+		if key == "" || !isValidPathSegment(key) {
+			log.Printf("Invalid mapping key: %s", key)
+			return redirectRule{}, false
+		}
 	}
 
 	// Default values
 	url := val
 	status := 302
 
-	// Parse optional status code
-	if strings.Contains(val, ",status=") {
-		segments := strings.SplitN(val, ",status=", 2)
-		url = strings.TrimSpace(segments[0])
-		if s, err := parseStatusCode(strings.TrimSpace(segments[1])); err == nil {
+	// Parse optional status code (supports both ,status= and named aliases)
+	if idx := strings.LastIndex(val, ","); idx != -1 {
+		possibleStatus := strings.TrimSpace(val[idx+1:])
+		// Check if it's a status directive (TrimPrefix is safe even if prefix doesn't exist)
+		possibleStatus = strings.TrimPrefix(possibleStatus, "status=")
+		// Try to parse as status code or alias
+		if s, err := parseStatusCode(possibleStatus); err == nil {
 			status = s
-		} else {
-			log.Printf("Invalid status code for %s: %v", key, err)
-			return
+			url = strings.TrimSpace(val[:idx])
 		}
 	}
 
 	// Basic URL validation
 	if url == "" {
 		log.Printf("Empty URL for key %s", key)
-		return
+		return redirectRule{}, false
 	}
 
-	rules[key] = redirectRule{url: url, status: status}
+	// Create the redirect rule
+	rule := redirectRule{
+		url:       url,
+		status:    status,
+		isPattern: isPattern,
+		prefix:    prefix,
+		path:      key,
+	}
+
+	return rule, true
+}
+
+// isValidPathSegment checks if a path segment is safe to use
+func isValidPathSegment(path string) bool {
+	if len(path) == 0 || len(path) > 2048 {
+		return false
+	}
+
+	// Reject path traversal attempts
+	if strings.Contains(path, "..") {
+		return false
+	}
+
+	// Reject null bytes
+	if strings.Contains(path, "\x00") {
+		return false
+	}
+
+	// Check if path needs escaping (except for slashes which are allowed)
+	escaped := url.PathEscape(path)
+	unescapedSlashes := strings.ReplaceAll(escaped, "%2F", "/")
+
+	return unescapedSlashes == path
 }
 
 // parseStatusCode validates and parses HTTP redirect status codes.
-// Only allows standard redirect status codes for security and correctness.
+// Supports both numeric codes and named aliases for better readability.
 func parseStatusCode(s string) (int, error) {
 	switch s {
-	case "301", "302", "303", "307", "308":
-		var code int
-		_, err := fmt.Sscanf(s, "%d", &code)
-		return code, err
+	case "301", "permanent":
+		return 301, nil
+	case "302", "temporary", "temp":
+		return 302, nil
+	case "303", "see-other":
+		return 303, nil
+	case "307", "temporary-strict":
+		return 307, nil
+	case "308", "permanent-strict":
+		return 308, nil
 	default:
-		return 0, fmt.Errorf("unsupported redirect status code: %s", s)
+		return 0, fmt.Errorf("unsupported redirect status code: %s (use: permanent, temporary, permanent-strict, temporary-strict, or 301-308)", s)
 	}
 }
 
@@ -340,12 +786,14 @@ func isValidURL(url string) bool {
 
 // getHostname extracts hostname from request, considering reverse proxy headers.
 func getHostname(r *http.Request) string {
-	// Check for reverse proxy headers first
-	if host := r.Header.Get("X-Forwarded-Host"); host != "" {
-		return host
-	}
-	if host := r.Header.Get("X-Original-Host"); host != "" {
-		return host
+	// Only trust proxy headers if request is from a trusted proxy
+	if isTrustedProxy(r.RemoteAddr) {
+		if host := r.Header.Get("X-Forwarded-Host"); host != "" {
+			return host
+		}
+		if host := r.Header.Get("X-Original-Host"); host != "" {
+			return host
+		}
 	}
 	// Fall back to Host header
 	if host := r.Host; host != "" {
@@ -398,16 +846,18 @@ func logAccess(r *http.Request, status int, duration time.Duration, logType, des
 
 // getRemoteAddr extracts the real client IP considering reverse proxy headers.
 func getRemoteAddr(r *http.Request) string {
-	// Check for reverse proxy headers first
-	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
-		// X-Forwarded-For can contain multiple IPs, take the first one
-		if idx := strings.Index(ip, ","); idx != -1 {
-			return strings.TrimSpace(ip[:idx])
+	// Only trust proxy headers if request is from a trusted proxy
+	if isTrustedProxy(r.RemoteAddr) {
+		if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+			// X-Forwarded-For can contain multiple IPs, take the first one
+			if idx := strings.Index(ip, ","); idx != -1 {
+				return strings.TrimSpace(ip[:idx])
+			}
+			return ip
 		}
-		return ip
-	}
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
+		if ip := r.Header.Get("X-Real-IP"); ip != "" {
+			return ip
+		}
 	}
 	// Fall back to RemoteAddr
 	return r.RemoteAddr

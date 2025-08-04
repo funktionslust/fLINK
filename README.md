@@ -1,257 +1,315 @@
 <img src="logo.svg" alt="Funktionslust Logo" width="120">
 
-# fLINK
+# fLINK - Production-Ready URL Redirector
 
-A lightweight HTTP redirect service with dynamic configuration support.
+**High-performance URL redirector with wildcard patterns, analytics integration, and QR code generation.**  
+Battle-tested in production with minimal resource usage and excellent performance.
 
-## Description
+Designed as a simpler, more accessible alternative to Shlink, YOURLS, and Polr - no database, no complex setup, just a single binary or Docker container.
 
-fLINK is a minimalistic redirect service that maps short codes to full URLs. It supports both file-based and environment-based configuration with hot reloading capabilities. Perfect for URL shortening, link management, or redirect proxying.
+[![Docker Pulls](https://img.shields.io/docker/pulls/funktionslust/flink)](https://hub.docker.com/r/funktionslust/flink)
+[![GitHub Stars](https://img.shields.io/github/stars/funktionslust/fLINK)](https://github.com/funktionslust/fLINK)
+[![License](https://img.shields.io/github/license/funktionslust/fLINK)](https://github.com/funktionslust/fLINK/blob/main/LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/funktionslust/fLINK)](https://goreportcard.com/report/github.com/funktionslust/fLINK)
 
-## Features
+**[Docker Hub](https://hub.docker.com/r/funktionslust/flink)** | 
+**[GitHub](https://github.com/funktionslust/fLINK)** | 
+**[Website](https://funktionslust.digital/apps/flink)**
 
-- **Dynamic Configuration**: Load redirects from files or environment variables
-- **Hot Reloading**: Automatically detects file changes and reloads configuration
-- **Multiple Status Codes**: Support for 301, 302, 303, 307, and 308 redirects
-- **Query Parameter Forwarding**: Automatically forwards query parameters to destination URLs
-- **QR Code Generation**: Generate QR codes for any redirect by adding `/qr` suffix
-- **Structured Logging**: Clear access logs with detailed request information
-- **Thread-Safe**: Concurrent request handling with safe configuration updates
-- **Input Validation**: Secure handling of short codes and URLs
-- **Reverse Proxy Support**: Proper hostname detection from proxy headers
+## Why fLINK?
 
-## Why Choose fLINK Over Alternatives?
+### Core Features
 
-Unlike complex URL shortening solutions like **Shlink**, **YOURLS**, **Polr**, or **Kutt**, fLINK follows the Unix philosophy: *do one thing and do it well*. 
+- **Simple Deployment** - Single static binary, no database required
+- **Hot Reload** - Configuration changes detected automatically (file watch or HTTP polling)
+- **Wildcard Patterns** - Bulk redirect entire directory structures with `/*` patterns
+- **Built-in QR Codes** - Automatic QR code generation at `/yourlink/qr` endpoints
+- **Analytics Ready** - Matomo integration with full UTM and click ID preservation
+- **High Performance** - Optimized for speed with concurrent-safe operations
+- **Security** - Path traversal protection, trusted proxy support, security headers
 
-| Feature | fLINK | Shlink | YOURLS | Polr | Others |
-|---------|-------|--------|--------|------|--------|
-| **No Frontend Required** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **No Database Required** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Single Binary** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **File-based Config** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
-| **Built-in QR Codes** | ✅ | ✅ | ❌ | ❌ | ⚠️ |
-| **Zero Dependencies** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Memory Footprint** | < 10MB | > 100MB | > 50MB | > 30MB | Varies |
-
-**Perfect for:**
-- DevOps teams who need simple redirects without UI overhead
-- Microservices architectures where each service should have a single responsibility  
-- Situations where you don't need click analytics, user management, or web interfaces
-- Container deployments where minimal resource usage matters
-- Teams who prefer configuration-as-code over database management
-
-## Installation
+## Quick Start
 
 ### Docker (Recommended)
 
 ```bash
-docker pull funktionslust/flink:latest
-docker run -p 8080:8080 -e REDIRECT_MAPPINGS="test=https://example.com" funktionslust/flink
+# Using environment variables for inline mappings
+docker run -d \
+  -p 8080:8080 \
+  -e REDIRECT_MAPPINGS="store=https://shop.example.com;contact=https://example.com/contact" \
+  funktionslust/flink:latest
 ```
 
-Test the redirect:
-```bash
-curl -I "http://localhost:8080/test?foo=123"
+Your redirects are ready:
+- `http://localhost:8080/store` → `https://shop.example.com`
+- `http://localhost:8080/contact` → `https://example.com/contact`
 
-HTTP/1.1 302 Found
-Content-Type: text/html; charset=utf-8
-Location: https://example.com?foo=123
-```
-
-### Using Go
+### Using CLI Flags
 
 ```bash
-go install github.com/funktionslust/fLINK@latest
+# Build from source
+go build -o flink .
+
+# Run with inline mappings
+./flink -mappings "store=https://shop.example.com;docs=https://docs.example.com" -port 8080
+
+# Use a configuration file
+./flink -mappings /etc/flink/redirects.txt
+
+# Disable query parameter forwarding
+./flink -mappings redirects.txt -forward-query-params=false
 ```
 
-### Building from Source
+### Using a Configuration File
 
+Create `redirects.txt`:
+```
+# Marketing campaigns
+summer-sale=https://shop.com/promotions/summer
+black-friday=https://shop.com/deals/black-friday
+
+# Support links  
+help=https://docs.example.com
+status=https://status.example.com
+
+# Permanent redirects for SEO (using named aliases)
+old-product=https://shop.com/products/new-name,permanent
+legacy-api=https://api.v2.example.com,status=301
+
+# Wildcard patterns for bulk redirects
+blog/*=https://newsite.com/posts/*,permanent
+old-docs/*=https://docs.example.com/archive/*
+```
+
+Run with Docker:
 ```bash
-git clone https://github.com/funktionslust/fLINK.git
-cd fLINK
-go build -o flink main.go
+docker run -d \
+  -p 8080:8080 \
+  -v ./redirects.txt:/app/redirects.txt \
+  -e REDIRECT_MAPPINGS=/app/redirects.txt \
+  funktionslust/flink:latest
 ```
 
-## Usage
+### Using Remote Configuration (HTTP/HTTPS)
+
+Load configuration from a web server - perfect for centralized management:
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -e REDIRECT_MAPPINGS=https://config.example.com/redirects.txt \
+  funktionslust/flink:latest
+```
+
+fLINK will fetch the configuration from the URL and refresh it every 10 minutes automatically.
+
+## Real-World Examples
+
+### Marketing Campaign Tracking
+
+**Problem:** You need to advertise `https://shop.example.com/products/category/summer-collection-2025?utm_source=radio&utm_medium=audio&utm_campaign=summer25` on a radio ad.
+
+**Solution:** Create a short, memorable redirect:
+```
+# redirects.txt
+summer=https://shop.example.com/products/category/summer-collection-2025
+```
+
+**Now you can:**
+- Say "Visit link.co/summer" on radio (easy to remember)
+- Use `link.co/summer?utm_source=radio` for radio ads
+- Use `link.co/summer?utm_source=billboard` for outdoor ads
+- Use `link.co/summer?utm_source=tv` for TV commercials
+- Track all campaigns in your analytics while keeping URLs short and memorable
+
+### Dynamic QR Codes
+
+```
+# redirects.txt
+menu=https://restaurant.com/current-menu.pdf
+wifi=https://restaurant.com/wifi-instructions
+```
+
+Generate QR codes automatically:
+- Menu QR: `https://link.restaurant.com/menu/qr`
+- WiFi QR: `https://link.restaurant.com/wifi/qr`
+
+Update the destination URLs anytime without reprinting QR codes!
+
+### SEO-Friendly Domain Migration
+
+Preserve search rankings with permanent redirects:
+```
+# Use status codes or named aliases
+old-blog=https://newsite.com/blog,permanent
+legacy-api=https://api.v2.example.com,status=301
+old-shop=https://newshop.com,301
+
+# Bulk redirect with wildcards
+docs/*=https://newdocs.com/archive/*,permanent
+blog/*=https://newsite.com/articles/*,301
+```
+
+## Production Deployment
+
+### Docker Compose with Traefik
+
+```yaml
+services:
+  flink:
+    image: funktionslust/flink:latest
+    volumes:
+      - ./redirects.txt:/app/redirects.txt
+    environment:
+      - REDIRECT_MAPPINGS=/app/redirects.txt
+      - TRUSTED_PROXIES=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.flink.rule=Host(`link.yourdomain.com`)"
+      - "traefik.http.routers.flink.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+```
+
+### With Matomo Analytics
+
+```yaml
+services:
+  flink:
+    image: funktionslust/flink:latest
+    environment:
+      - REDIRECT_MAPPINGS=/app/redirects.txt
+      - MATOMO_URL=https://analytics.example.com
+      - MATOMO_TOKEN_FILE=/run/secrets/matomo_token
+    secrets:
+      - matomo_token
+    restart: unless-stopped
+```
+
+**Analytics Features:**
+- Automatic event tracking for all redirects
+- Full UTM parameter preservation
+- Click ID tracking (gclid, fbclid, msclkid)
+- Respects visitor privacy settings
+
+## Configuration
+
+### Redirect Format
+
+```
+short-code=destination-url[,status=301|302|307|308|permanent|temporary]
+```
+
+- Default status: 302 (temporary)
+- Use 301 or `permanent` for permanent redirects (SEO)
+- Use 302 or `temporary` for temporary redirects
+- Use 307 (`temporary-strict`) or 308 (`permanent-strict`) to preserve request method
+- Use 303 (`see-other`) to change POST to GET
+
+### Wildcard Patterns
+
+Handle bulk redirects with wildcard patterns:
+
+```
+# Redirect entire directory structures
+blog/*=https://newsite.com/articles/*
+docs/*=https://documentation.site/*
+
+# API versioning
+api/v1/*=https://v1.api.com/*
+api/v2/*=https://v2.api.com/*
+
+# Catch-all (lowest priority)
+/*=https://default.com/*
+```
+
+**Pattern Matching Rules:**
+- Wildcards (`*`) must be at the end of the path
+- Longer prefixes match first (more specific wins)
+- Exact matches always beat wildcard patterns
+- The captured suffix is preserved in the destination URL
+- Pattern: `blog/*` → `https://new.com/posts/*`
+- Request: `/blog/hello-world` → `https://new.com/posts/hello-world`
+
+### CLI Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-mappings` | File path, URL, or inline mappings | - |
+| `-port` | Server port | 8080 |
+| `-forward-query-params` | Forward query parameters to destination | true |
+| `-help` | Show help message | - |
+| `-version` | Show version information | - |
 
 ### Environment Variables
 
-- `REDIRECT_MAPPINGS`: Either a file path or inline mapping string (required)
-- `PORT`: Server port (default: 8080)
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `REDIRECT_MAPPINGS` | File path, URL, or inline mappings | - |
+| `PORT` | Server port | 8080 |
+| `FORWARD_QUERY_PARAMS` | Forward query parameters to destination | true |
+| `TRUSTED_PROXIES` | Comma-separated CIDR ranges of trusted proxies | Private networks |
+| `MATOMO_URL` | Analytics server URL | - |
+| `MATOMO_TOKEN` | Analytics API token | - |
 
-### Configuration Format
+**Notes:** 
+- CLI flags take precedence over environment variables
+- All environment variables support `_FILE` suffix for Docker secrets
+- Private network ranges are trusted by default (can be overridden)
 
-Mappings use the format `code=url` or `code=url,status=code`:
+## Security Features
 
-```
-home=https://example.com
-search=https://google.com,status=301
-docs=https://docs.example.com/guide,status=307
-```
+### Built-in Protections
 
-**Note**: The default status code is 302 (temporary redirect). Use `status=301` for permanent redirects.
+- **Path Traversal Prevention** - Blocks `../`, null bytes, and encoded attacks
+- **Security Headers** - Automatic `X-Content-Type-Options`, `X-Frame-Options`
+- **Trusted Proxy Support** - Configurable CIDR ranges for `X-Forwarded-*` headers
+- **Request Validation** - Only GET/HEAD methods allowed
+- **URL Validation** - Enforces `http://` or `https://` destinations
 
-### File-based Configuration
+### Performance
 
-Create a mappings file:
+- **Minimal Memory** - Lightweight memory footprint
+- **Sub-millisecond Latency** - 7-18 microseconds for redirects in production
+- **Zero Dependencies** - Single static binary
+- **Instant Reload** - Hot configuration updates without downtime
+- **Concurrent Safe** - Thread-safe rule updates
 
-```bash
-echo "test=https://example.com" > redirects.txt
-REDIRECT_MAPPINGS=redirects.txt ./flink
-```
+## Monitoring & Operations
 
-The service automatically detects changes to the file and reloads the configuration without requiring a restart. This allows you to add, modify, or remove redirects on the fly.
-
-### Inline Configuration
-
-```bash
-REDIRECT_MAPPINGS="test=https://example.com;demo=https://google.com,status=302" ./flink
-```
-
-### Docker Compose
-
-```yaml
-services:
-  flink:
-    image: funktionslust/flink:latest
-    ports:
-      - "8080:8080"
-    environment:
-      - REDIRECT_MAPPINGS=test=https://example.com;demo=https://google.com,status=302
-```
-
-### Making Requests
-
-Once running, access redirects at `http://localhost:8080/{code}`:
+### Health Checks
 
 ```bash
-curl -I http://localhost:8080/test  # Redirects to https://example.com
+# Simple health check
+curl http://localhost:8080/health
+
+# Check specific redirect
+curl -I http://localhost:8080/your-link
 ```
 
-### Query Parameter Forwarding
+### Logging
 
-Query parameters are automatically forwarded to the destination URL:
-
-```bash
-# Configuration: test=https://example.com
-curl -I "http://localhost:8080/test?user=john&tab=profile"
-# Redirects to: https://example.com?user=john&tab=profile
-
-# Configuration: search=https://google.com/search?q=flink
-curl -I "http://localhost:8080/search?lang=en"  
-# Redirects to: https://google.com/search?q=flink&lang=en
+All requests are logged with structured format:
+```
+[2025-01-15T10:30:45Z] 192.168.1.100 GET /campaign → https://shop.com (301) 1.2ms
+[2025-01-15T10:30:46Z] 192.168.1.101 GET /menu/qr → QR:https://link.com/menu (200) 3.5ms
 ```
 
-### QR Code Generation
+## Planned Features
 
-Generate QR codes for any configured redirect by adding `/qr` to the URL:
+- **Management API** - REST API for dynamic rule management
+- **Google Analytics** - Native GA4 integration
+- **Rule Validation** - Pre-flight configuration testing
 
-```bash
-# View in browser
-http://localhost:8080/test/qr
+## Support
 
-# Download via curl
-curl http://localhost:8080/test/qr -o test-qr.png
-```
-
-The QR code contains the full short URL (including hostname and path prefix from reverse proxy headers) and can be scanned to access the redirect. When using reverse proxies like Traefik with path stripping, the QR code will include the original path prefix.
-
-## Examples
-
-See the `example/` directory for complete Docker Compose setups, including:
-- Basic Docker Compose configuration
-- Traefik 3 reverse proxy integration with SSL certificates
-
-### Traefik 3 Integration
-
-For production deployments with automatic SSL certificates:
-
-```yaml
-# traefik-docker-compose.yml
-services:
-  flink:
-    image: funktionslust/flink:latest
-    environment:
-      - REDIRECT_MAPPINGS=test=https://example.com
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.flink.rule=Host(`links.example.com`)"
-      - "traefik.http.routers.flink.entrypoints=websecure"
-      - "traefik.http.routers.flink.tls.certresolver=letsencrypt"
-```
-
-## Logging
-
-fLINK outputs structured access logs for all requests:
-
-```
-[2025-06-15T19:24:54Z] 203.0.113.1 GET /test → https://example.com (301) 500ns
-[2025-06-15T19:25:03Z] 203.0.113.1 GET /test/qr → QR:https://example.com/test (200) 3.2ms
-[2025-06-15T19:25:15Z] 203.0.113.2 GET /invalid ERROR: Invalid short code (400) 250ns
-```
-
-fLINK displays all loaded redirect rules on startup and when configuration changes:
-```
-2025/06/15 19:24:50 Loaded 3 redirect rule(s):
-2025/06/15 19:24:50   home → https://example.com (status: 301)
-2025/06/15 19:24:50   search → https://google.com (status: 302)
-2025/06/15 19:24:50   docs → https://docs.example.com/guide (status: 307)
-```
-
-## Security
-
-- Only accepts GET and HEAD requests
-- Validates short codes (alphanumeric, hyphens, underscores only)
-- Validates URLs must start with http:// or https://
-- Restricts redirect status codes to standard values
-- Limits short code length to 256 characters
-- Limits URL length to 2048 characters
-- Proper handling of reverse proxy headers
-- No external dependencies except QR code library
-
-## Testing
-
-Run the comprehensive test suite:
-
-```bash
-go test -v                    # Run all tests
-go test -race                 # Run with race detection
-go test -coverprofile=coverage.out  # Generate coverage report
-```
-
-Current test coverage: **83.7%** with 25+ test functions covering:
-- Input validation (short codes, URLs, status codes)
-- Configuration parsing and file loading
-- HTTP request handling (redirects, QR codes, errors)
-- Concurrent access and thread safety
-- Reverse proxy header handling
-- Structured logging functionality
-
-## Publishing & Distribution
-
-### GitHub Repository
-- **Source Code**: [github.com/funktionslust/fLINK](https://github.com/funktionslust/fLINK)
-- **Issues & Support**: [GitHub Issues](https://github.com/funktionslust/fLINK/issues)
-- **Releases**: [GitHub Releases](https://github.com/funktionslust/fLINK/releases)
-
-### Docker Hub
-- **Registry**: [hub.docker.com/r/funktionslust/flink](https://hub.docker.com/r/funktionslust/flink)
-- **Pull Command**: `docker pull funktionslust/flink:latest`
-- **Multi-platform**: Supports `linux/amd64` and `linux/arm64`
-
-### Automated CI/CD
-- ✅ **GitHub Actions**: Automated testing, building, and Docker image publishing
-- ✅ **Multi-platform Builds**: AMD64 and ARM64 support
-- ✅ **Automated Releases**: GoReleaser integration for cross-platform binaries
-- ✅ **Code Coverage**: Integrated with Codecov
-
-## Author
-
-**fLINK** is developed and maintained by [Funktionslust GmbH](https://funktionslust.digital).
-
-For professional consulting, custom development, or enterprise support, please contact us.
+- **Issues**: [GitHub Issues](https://github.com/funktionslust/fLINK/issues)
+- **Docker Hub**: [funktionslust/flink](https://hub.docker.com/r/funktionslust/flink)
+- **Support**: Available from [Funktionslust GmbH](https://funktionslust.digital)
 
 ## License
 
-MIT License - Copyright (c) 2025 Funktionslust GmbH
+MIT License - Use it freely in your projects!
+
+---
+
+**Built by [Funktionslust GmbH](https://funktionslust.digital)**  
+*Enterprise software development and consulting.*

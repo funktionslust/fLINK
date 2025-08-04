@@ -10,6 +10,37 @@ import (
 	"time"
 )
 
+func TestIsValidPathSegment(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		expected bool
+	}{
+		{"Valid simple path", "test", true},
+		{"Valid with hyphen", "test-123", true},
+		{"Valid with underscore", "test_abc", true},
+		{"Valid with slash", "blog/post", true},
+		{"Valid nested path", "api/v1/users", true},
+		{"Empty path", "", false},
+		{"Path traversal attempt", "../etc/passwd", false},
+		{"Path traversal hidden", "test/../admin", false},
+		{"Double dots alone", "..", false},
+		{"Contains null byte", "test\x00hack", false},
+		{"Too long path", strings.Repeat("a", 2049), false},
+		{"URL encoded traversal", "..%2F..%2Fetc", false}, // Rejected due to % encoding
+		{"Valid encoded space", "hello%20world", false},   // Rejected due to % encoding
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isValidPathSegment(tt.path)
+			if result != tt.expected {
+				t.Errorf("isValidPathSegment(%q) = %v, want %v", tt.path, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestIsValidID(t *testing.T) {
 	tests := []struct {
 		id       string
@@ -91,44 +122,43 @@ func TestParseStatusCode(t *testing.T) {
 }
 
 func TestParseMappingLine(t *testing.T) {
-	rules := make(map[string]redirectRule)
-
-	// Test valid mapping
-	parseMappingLine("test=https://example.com", rules)
-	if len(rules) != 1 {
-		t.Errorf("Expected 1 rule, got %d", len(rules))
-	}
-	if rule, ok := rules["test"]; ok {
-		if rule.url != "https://example.com" {
-			t.Errorf("Expected url 'https://example.com', got %q", rule.url)
-		}
-		if rule.status != 302 {
-			t.Errorf("Expected status 302, got %d", rule.status)
-		}
-	} else {
-		t.Error("Rule 'test' not found")
-	}
-
-	// Test with custom status
-	parseMappingLine("demo=https://google.com,status=302", rules)
-	if rule, ok := rules["demo"]; ok {
-		if rule.url != "https://google.com" {
-			t.Errorf("Expected url 'https://google.com', got %q", rule.url)
-		}
-		if rule.status != 302 {
-			t.Errorf("Expected status 302, got %d", rule.status)
-		}
-	} else {
-		t.Error("Rule 'demo' not found")
+	tests := []struct {
+		name            string
+		line            string
+		expectValid     bool
+		expectedURL     string
+		expectedStatus  int
+		expectedPattern bool
+	}{
+		{"Valid mapping", "test=https://example.com", true, "https://example.com", 302, false},
+		{"With custom status", "demo=https://google.com,status=302", true, "https://google.com", 302, false},
+		{"With permanent redirect", "old=https://new.com,permanent", true, "https://new.com", 301, false},
+		{"Wildcard pattern", "blog/*=https://new.com/articles/*", true, "https://new.com/articles/*", 302, true},
+		{"Invalid - no equals", "invalid", false, "", 0, false},
+		{"Invalid - no key", "=no-key", false, "", 0, false},
+		{"Invalid - no value", "no-value=", false, "", 0, false},
 	}
 
-	// Test invalid formats
-	originalLen := len(rules)
-	parseMappingLine("invalid", rules)
-	parseMappingLine("=no-key", rules)
-	parseMappingLine("no-value=", rules)
-	if len(rules) != originalLen {
-		t.Errorf("Invalid lines should not add rules")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rule, ok := parseMappingLine(tt.line)
+			if ok != tt.expectValid {
+				t.Errorf("Expected validity %v, got %v", tt.expectValid, ok)
+				return
+			}
+			if !tt.expectValid {
+				return
+			}
+			if rule.url != tt.expectedURL {
+				t.Errorf("Expected URL %q, got %q", tt.expectedURL, rule.url)
+			}
+			if rule.status != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, rule.status)
+			}
+			if rule.isPattern != tt.expectedPattern {
+				t.Errorf("Expected isPattern %v, got %v", tt.expectedPattern, rule.isPattern)
+			}
+		})
 	}
 }
 
@@ -144,23 +174,28 @@ multi=https://site.com,status=307
 
 	parseAndSetMappings(data)
 
-	if len(rules) != 3 {
-		t.Errorf("Expected 3 rules, got %d", len(rules))
+	// Check that rules were loaded
+	rule1, ok1, _ := ruleSet.Match("test")
+	if !ok1 || rule1.url != "https://example.com" {
+		t.Errorf("Expected test rule, got %v", rule1)
+	}
+
+	rule2, ok2, _ := ruleSet.Match("demo")
+	if !ok2 || rule2.url != "https://google.com" {
+		t.Errorf("Expected demo rule, got %v", rule2)
 	}
 
 	// Test semicolon separation
 	parseAndSetMappings("a=https://a.com;b=https://b.com,status=303")
-	if len(rules) != 2 {
-		t.Errorf("Expected 2 rules after semicolon test, got %d", len(rules))
+	ruleA, okA, _ := ruleSet.Match("a")
+	if !okA || ruleA.url != "https://a.com" {
+		t.Errorf("Expected 'a' rule after semicolon test")
 	}
 }
 
 func TestHandleRequest(t *testing.T) {
 	// Setup test rules
-	rules = map[string]redirectRule{
-		"test": {url: "https://example.com", status: 301},
-		"demo": {url: "https://google.com", status: 302},
-	}
+	parseAndSetMappings("test=https://example.com,status=301;demo=https://google.com,status=302")
 
 	tests := []struct {
 		name           string
@@ -174,7 +209,6 @@ func TestHandleRequest(t *testing.T) {
 		{"Not found", "GET", "/nonexistent", 404, ""},
 		{"Method not allowed", "POST", "/test", 405, ""},
 		{"Empty path", "GET", "/", 404, ""},
-		{"Invalid ID", "GET", "/test@invalid", 400, ""},
 		{"QR code request", "GET", "/test/qr", 200, ""},
 	}
 
@@ -209,9 +243,7 @@ func TestHandleRequest(t *testing.T) {
 
 func TestQRCodeGeneration(t *testing.T) {
 	// Setup test rules
-	rules = map[string]redirectRule{
-		"test": {url: "https://example.com", status: 301},
-	}
+	parseAndSetMappings("test=https://example.com,status=301")
 
 	req := httptest.NewRequest("GET", "/test/qr", nil)
 	req.Host = "short.ly"
@@ -242,9 +274,7 @@ func TestQRCodeGeneration(t *testing.T) {
 
 func TestQRCodeNotFound(t *testing.T) {
 	// Setup test rules
-	rules = map[string]redirectRule{
-		"test": {url: "https://example.com", status: 301},
-	}
+	parseAndSetMappings("test=https://example.com,status=301")
 
 	req := httptest.NewRequest("GET", "/nonexistent/qr", nil)
 	w := httptest.NewRecorder()
@@ -262,11 +292,13 @@ func TestPrintBanner(t *testing.T) {
 }
 
 func TestQueryParameterForwarding(t *testing.T) {
-	// Setup test rules
-	rules = map[string]redirectRule{
-		"search": {url: "https://google.com/search", status: 301},
-		"home":   {url: "https://example.com", status: 302},
+	// Setup config with query parameter forwarding enabled
+	cfg = config{
+		forwardQueryParams: true,
 	}
+
+	// Setup test rules
+	parseAndSetMappings("search=https://google.com/search,status=301;home=https://example.com,status=302")
 
 	tests := []struct {
 		name        string
@@ -277,8 +309,8 @@ func TestQueryParameterForwarding(t *testing.T) {
 		{"Single query param", "/home?test=value", "https://example.com?test=value"},
 		{"Multiple query params", "/home?a=1&b=2", "https://example.com?a=1&b=2"},
 		{"URL with existing params", "/search?q=golang", "https://google.com/search?q=golang"},
-		{"Complex query string", "/home?user=john&tab=profile&sort=name", "https://example.com?user=john&tab=profile&sort=name"},
-		{"URL encoded params", "/home?name=John%20Doe&city=New%20York", "https://example.com?name=John%20Doe&city=New%20York"},
+		{"Complex query string", "/home?user=john&tab=profile&sort=name", "https://example.com?sort=name&tab=profile&user=john"},
+		{"URL encoded params", "/home?name=John%20Doe&city=New%20York", "https://example.com?city=New+York&name=John+Doe"},
 	}
 
 	for _, tt := range tests {
@@ -302,10 +334,13 @@ func TestQueryParameterForwarding(t *testing.T) {
 }
 
 func TestQueryParameterForwardingWithExistingParams(t *testing.T) {
-	// Test URL that already has query parameters
-	rules = map[string]redirectRule{
-		"search": {url: "https://google.com/search?q=flink", status: 301},
+	// Setup config with query parameter forwarding enabled
+	cfg = config{
+		forwardQueryParams: true,
 	}
+
+	// Test URL that already has query parameters
+	parseAndSetMappings("search=https://google.com/search?q=flink,status=301")
 
 	tests := []struct {
 		name        string
@@ -313,8 +348,8 @@ func TestQueryParameterForwardingWithExistingParams(t *testing.T) {
 		expectedLoc string
 	}{
 		{"No additional params", "/search", "https://google.com/search?q=flink"},
-		{"Additional params", "/search?lang=en", "https://google.com/search?q=flink&lang=en"},
-		{"Multiple additional params", "/search?lang=en&safe=on", "https://google.com/search?q=flink&lang=en&safe=on"},
+		{"Additional params", "/search?lang=en", "https://google.com/search?lang=en&q=flink"},
+		{"Multiple additional params", "/search?lang=en&safe=on", "https://google.com/search?lang=en&q=flink&safe=on"},
 	}
 
 	for _, tt := range tests {
@@ -388,8 +423,14 @@ func TestLoadFileMappings(t *testing.T) {
 	// Test loading
 	loadFileMappings(tmpfile.Name())
 
-	if len(rules) != 2 {
-		t.Errorf("Expected 2 rules after loading file, got %d", len(rules))
+	// Check rules were loaded
+	rule1, ok1, _ := ruleSet.Match("test")
+	if !ok1 || rule1.url != "https://example.com" {
+		t.Errorf("Expected test rule to be loaded")
+	}
+	rule2, ok2, _ := ruleSet.Match("demo")
+	if !ok2 || rule2.url != "https://google.com" {
+		t.Errorf("Expected demo rule to be loaded")
 	}
 
 	// Test loading non-existent file (should not panic)
@@ -414,22 +455,28 @@ func TestGetEnv(t *testing.T) {
 }
 
 func TestGetHostname(t *testing.T) {
+	// Set up trusted proxies for testing
+	parseTrustedProxies("127.0.0.1")
+
 	tests := []struct {
-		name     string
-		headers  map[string]string
-		host     string
-		expected string
+		name       string
+		headers    map[string]string
+		host       string
+		remoteAddr string
+		expected   string
 	}{
-		{"X-Forwarded-Host", map[string]string{"X-Forwarded-Host": "proxy.example.com"}, "", "proxy.example.com"},
-		{"X-Original-Host", map[string]string{"X-Original-Host": "original.example.com"}, "", "original.example.com"},
-		{"Host header", map[string]string{}, "direct.example.com", "direct.example.com"},
-		{"Fallback", map[string]string{}, "", "localhost:8080"},
+		{"X-Forwarded-Host", map[string]string{"X-Forwarded-Host": "proxy.example.com"}, "", "127.0.0.1:1234", "proxy.example.com"},
+		{"X-Original-Host", map[string]string{"X-Original-Host": "original.example.com"}, "", "127.0.0.1:1234", "original.example.com"},
+		{"Host header", map[string]string{}, "direct.example.com", "127.0.0.1:1234", "direct.example.com"},
+		{"Fallback", map[string]string{}, "", "127.0.0.1:1234", "localhost:8080"},
+		{"Untrusted proxy ignores forwarded", map[string]string{"X-Forwarded-Host": "evil.com"}, "safe.com", "8.8.8.8:443", "safe.com"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.Host = tt.host
+			req.RemoteAddr = tt.remoteAddr
 			for key, value := range tt.headers {
 				req.Header.Set(key, value)
 			}
@@ -470,16 +517,20 @@ func TestGetPathPrefix(t *testing.T) {
 }
 
 func TestGetRemoteAddr(t *testing.T) {
+	// Set up trusted proxies for testing
+	parseTrustedProxies("127.0.0.1")
+
 	tests := []struct {
 		name       string
 		headers    map[string]string
 		remoteAddr string
 		expected   string
 	}{
-		{"X-Forwarded-For single", map[string]string{"X-Forwarded-For": "203.0.113.1"}, "", "203.0.113.1"},
-		{"X-Forwarded-For multiple", map[string]string{"X-Forwarded-For": "203.0.113.1, 203.0.113.2"}, "", "203.0.113.1"},
-		{"X-Real-IP", map[string]string{"X-Real-IP": "203.0.113.3"}, "", "203.0.113.3"},
+		{"X-Forwarded-For single", map[string]string{"X-Forwarded-For": "203.0.113.1"}, "127.0.0.1:1234", "203.0.113.1"},
+		{"X-Forwarded-For multiple", map[string]string{"X-Forwarded-For": "203.0.113.1, 203.0.113.2"}, "127.0.0.1:1234", "203.0.113.1"},
+		{"X-Real-IP", map[string]string{"X-Real-IP": "203.0.113.3"}, "127.0.0.1:1234", "203.0.113.3"},
 		{"RemoteAddr fallback", map[string]string{}, "203.0.113.4:1234", "203.0.113.4:1234"},
+		{"Untrusted proxy ignores headers", map[string]string{"X-Forwarded-For": "fake.ip"}, "8.8.8.8:443", "8.8.8.8:443"},
 	}
 
 	for _, tt := range tests {
@@ -541,9 +592,7 @@ func TestLogAccess(t *testing.T) {
 
 func TestConcurrentAccess(t *testing.T) {
 	// Test concurrent read/write access to rules
-	rules = map[string]redirectRule{
-		"test": {url: "https://example.com", status: 301},
-	}
+	parseAndSetMappings("test=https://example.com,status=301")
 
 	done := make(chan bool, 2)
 
@@ -573,9 +622,7 @@ func TestConcurrentAccess(t *testing.T) {
 }
 
 func BenchmarkHandleRequest(b *testing.B) {
-	rules = map[string]redirectRule{
-		"test": {url: "https://example.com", status: 301},
-	}
+	parseAndSetMappings("test=https://example.com,status=301")
 
 	req := httptest.NewRequest("GET", "/test", nil)
 
@@ -587,9 +634,7 @@ func BenchmarkHandleRequest(b *testing.B) {
 }
 
 func BenchmarkQRGeneration(b *testing.B) {
-	rules = map[string]redirectRule{
-		"test": {url: "https://example.com", status: 301},
-	}
+	parseAndSetMappings("test=https://example.com,status=301")
 
 	req := httptest.NewRequest("GET", "/test/qr", nil)
 
@@ -602,11 +647,7 @@ func BenchmarkQRGeneration(b *testing.B) {
 
 func TestCommonHeaders(t *testing.T) {
 	// Setup test rules
-	rulesMu.Lock()
-	rules = map[string]redirectRule{
-		"test": {url: "https://example.com", status: 301},
-	}
-	rulesMu.Unlock()
+	parseAndSetMappings("test=https://example.com,status=301")
 
 	tests := []struct {
 		name           string
@@ -647,5 +688,322 @@ func BenchmarkIsValidID(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		isValidID(testID)
+	}
+}
+
+// TestWildcardMatching tests the wildcard pattern matching functionality
+func TestWildcardMatching(t *testing.T) {
+	// Initialize config
+	cfg = config{
+		forwardQueryParams: true,
+	}
+
+	tests := []struct {
+		name           string
+		mappings       string
+		requestPath    string
+		expectedStatus int
+		expectedDest   string
+	}{
+		{
+			name:           "Exact match takes precedence over wildcard",
+			mappings:       "blog/hello=https://exact.com;blog/*=https://pattern.com/*",
+			requestPath:    "/blog/hello",
+			expectedStatus: 302,
+			expectedDest:   "https://exact.com",
+		},
+		{
+			name:           "Wildcard with suffix preservation",
+			mappings:       "blog/*=https://new.com/articles/*",
+			requestPath:    "/blog/my-post",
+			expectedStatus: 302,
+			expectedDest:   "https://new.com/articles/my-post",
+		},
+		{
+			name:           "Wildcard with nested path preservation",
+			mappings:       "blog/*=https://new.com/articles/*",
+			requestPath:    "/blog/2024/12/post",
+			expectedStatus: 302,
+			expectedDest:   "https://new.com/articles/2024/12/post",
+		},
+		{
+			name:           "Wildcard without suffix in destination (drops suffix)",
+			mappings:       "old/*=https://new.com/deprecated",
+			requestPath:    "/old/anything/here",
+			expectedStatus: 302,
+			expectedDest:   "https://new.com/deprecated",
+		},
+		{
+			name:           "More specific pattern wins",
+			mappings:       "api/v1/*=https://v1.api.com/*;api/*=https://api.com/*",
+			requestPath:    "/api/v1/users",
+			expectedStatus: 302,
+			expectedDest:   "https://v1.api.com/users",
+		},
+		{
+			name:           "Less specific pattern matches when more specific doesn't",
+			mappings:       "api/v1/*=https://v1.api.com/*;api/*=https://api.com/*",
+			requestPath:    "/api/v2/users",
+			expectedStatus: 302,
+			expectedDest:   "https://api.com/v2/users",
+		},
+		{
+			name:           "Catch-all pattern",
+			mappings:       "specific=https://specific.com;/*=https://catchall.com/*",
+			requestPath:    "/random/path",
+			expectedStatus: 302,
+			expectedDest:   "https://catchall.com/random/path",
+		},
+		{
+			name:           "Wildcard with permanent redirect",
+			mappings:       "old/*=https://new.com/*,permanent",
+			requestPath:    "/old/page",
+			expectedStatus: 301,
+			expectedDest:   "https://new.com/page",
+		},
+		{
+			name:           "Root wildcard matches everything",
+			mappings:       "*=https://default.com/*",
+			requestPath:    "/any/path/here",
+			expectedStatus: 302,
+			expectedDest:   "https://default.com/any/path/here",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Parse mappings
+			parseAndSetMappings(tt.mappings)
+
+			// Create test request
+			req := httptest.NewRequest("GET", tt.requestPath, nil)
+			req.RemoteAddr = "192.0.2.1:1234"
+			rr := httptest.NewRecorder()
+
+			// Handle request
+			handleRequest(rr, req)
+
+			// Check status code
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, rr.Code)
+			}
+
+			// Check redirect location
+			if tt.expectedStatus == 301 || tt.expectedStatus == 302 {
+				location := rr.Header().Get("Location")
+				if location != tt.expectedDest {
+					t.Errorf("Expected redirect to %s, got %s", tt.expectedDest, location)
+				}
+			}
+		})
+	}
+}
+
+// TestRedirectTypeAliases tests the named redirect type aliases
+func TestRedirectTypeAliases(t *testing.T) {
+	tests := []struct {
+		name         string
+		statusAlias  string
+		expectedCode int
+		shouldError  bool
+	}{
+		{"Permanent alias", "permanent", 301, false},
+		{"Temporary alias", "temporary", 302, false},
+		{"Temp short alias", "temp", 302, false},
+		{"See-other alias", "see-other", 303, false},
+		{"Temporary-strict alias", "temporary-strict", 307, false},
+		{"Permanent-strict alias", "permanent-strict", 308, false},
+		{"Numeric 301", "301", 301, false},
+		{"Numeric 302", "302", 302, false},
+		{"Numeric 303", "303", 303, false},
+		{"Numeric 307", "307", 307, false},
+		{"Numeric 308", "308", 308, false},
+		{"Invalid alias", "invalid", 0, true},
+		{"Invalid number", "400", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, err := parseStatusCode(tt.statusAlias)
+
+			if tt.shouldError {
+				if err == nil {
+					t.Errorf("Expected error for %s, but got none", tt.statusAlias)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error for %s: %v", tt.statusAlias, err)
+				}
+				if code != tt.expectedCode {
+					t.Errorf("Expected code %d for %s, got %d", tt.expectedCode, tt.statusAlias, code)
+				}
+			}
+		})
+	}
+}
+
+// TestTrustedProxyValidation tests the trusted proxy IP validation
+func TestTrustedProxyValidation(t *testing.T) {
+	// Set up trusted proxies
+	err := parseTrustedProxies("10.0.0.0/8,192.168.0.0/16,127.0.0.1")
+	if err != nil {
+		t.Fatalf("Failed to parse trusted proxies: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		remoteAddr    string
+		expectTrusted bool
+	}{
+		{"Local loopback", "127.0.0.1:1234", true},
+		{"Private 10.x", "10.0.0.5:8080", true},
+		{"Private 192.168.x", "192.168.1.100:3000", true},
+		{"Public IP", "8.8.8.8:443", false},
+		{"Another public IP", "1.2.3.4:80", false},
+		{"Private 172.16.x not in list", "172.16.1.1:80", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			trusted := isTrustedProxy(tt.remoteAddr)
+			if trusted != tt.expectTrusted {
+				t.Errorf("Expected isTrustedProxy(%s) = %v, got %v",
+					tt.remoteAddr, tt.expectTrusted, trusted)
+			}
+		})
+	}
+}
+
+// TestForwardedHeaders tests that forwarded headers are only trusted from trusted proxies
+func TestForwardedHeaders(t *testing.T) {
+	// Set up trusted proxies
+	err := parseTrustedProxies("127.0.0.1")
+	if err != nil {
+		t.Fatalf("Failed to parse trusted proxies: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		remoteAddr    string
+		forwardedHost string
+		forwardedFor  string
+		expectedHost  string
+		expectedIP    string
+	}{
+		{
+			name:          "Trusted proxy - use forwarded headers",
+			remoteAddr:    "127.0.0.1:1234",
+			forwardedHost: "forwarded.example.com",
+			forwardedFor:  "203.0.113.1",
+			expectedHost:  "forwarded.example.com",
+			expectedIP:    "203.0.113.1",
+		},
+		{
+			name:          "Untrusted proxy - ignore forwarded headers",
+			remoteAddr:    "8.8.8.8:443",
+			forwardedHost: "evil.example.com",
+			forwardedFor:  "203.0.113.1",
+			expectedHost:  "test.example.com", // Should use Host header
+			expectedIP:    "8.8.8.8:443",      // Should use RemoteAddr
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/test", nil)
+			req.RemoteAddr = tt.remoteAddr
+			req.Host = "test.example.com"
+			if tt.forwardedHost != "" {
+				req.Header.Set("X-Forwarded-Host", tt.forwardedHost)
+			}
+			if tt.forwardedFor != "" {
+				req.Header.Set("X-Forwarded-For", tt.forwardedFor)
+			}
+
+			host := getHostname(req)
+			if host != tt.expectedHost {
+				t.Errorf("Expected host %s, got %s", tt.expectedHost, host)
+			}
+
+			ip := getRemoteAddr(req)
+			if ip != tt.expectedIP {
+				t.Errorf("Expected IP %s, got %s", tt.expectedIP, ip)
+			}
+		})
+	}
+}
+
+// TestWildcardWithQueryParams tests that query parameters work with wildcards
+func TestWildcardWithQueryParams(t *testing.T) {
+	cfg = config{
+		forwardQueryParams: true,
+	}
+
+	// Set up a wildcard redirect
+	parseAndSetMappings("api/*=https://backend.com/v2/*")
+
+	req := httptest.NewRequest("GET", "/api/users?limit=10&offset=20", nil)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+
+	handleRequest(rr, req)
+
+	if rr.Code != 302 {
+		t.Errorf("Expected status 302, got %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	expected := "https://backend.com/v2/users?limit=10&offset=20"
+	if location != expected {
+		t.Errorf("Expected location %s, got %s", expected, location)
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	// Setup test rule
+	parseAndSetMappings("test=https://example.com")
+
+	tests := []struct {
+		name   string
+		path   string
+		method string
+	}{
+		{"Redirect request", "/test", "GET"},
+		{"Not found request", "/notfound", "GET"},
+		{"Method not allowed", "/test", "POST"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req.RemoteAddr = "127.0.0.1:1234"
+			rr := httptest.NewRecorder()
+
+			handleRequest(rr, req)
+
+			// Check security headers are always present
+			if got := rr.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options = %v, want nosniff", got)
+			}
+			if got := rr.Header().Get("X-Frame-Options"); got != "DENY" {
+				t.Errorf("X-Frame-Options = %v, want DENY", got)
+			}
+		})
+	}
+}
+
+func TestLoadInlineMappings(t *testing.T) {
+	// Test inline mappings loading
+	loadInlineMappings("test=https://example.com;demo=https://demo.com,permanent")
+
+	// Check rules were loaded
+	rule1, ok1, _ := ruleSet.Match("test")
+	if !ok1 || rule1.url != "https://example.com" || rule1.status != 302 {
+		t.Errorf("Expected test rule with 302 status")
+	}
+
+	rule2, ok2, _ := ruleSet.Match("demo")
+	if !ok2 || rule2.url != "https://demo.com" || rule2.status != 301 {
+		t.Errorf("Expected demo rule with 301 status")
 	}
 }

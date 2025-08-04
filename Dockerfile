@@ -13,7 +13,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY main.go .
+COPY *.go ./
+COPY tracking ./tracking/
 
 # Build the binary with version information
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
@@ -21,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
     -X main.version=${VERSION} \
     -X main.commit=${COMMIT} \
     -X main.date=${BUILD_DATE}" \
-    -o flink main.go
+    -o flink .
 
 # Final stage
 FROM alpine:3.22
