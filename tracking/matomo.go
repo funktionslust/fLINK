@@ -69,7 +69,7 @@ func (m *MatomoTracker) IsEnabled() bool {
 }
 
 // TrackEvent sends an event to Matomo for the appropriate site
-func (m *MatomoTracker) TrackEvent(r *http.Request, category, action, name string) {
+func (m *MatomoTracker) TrackEvent(data EventData, category, action, name string) {
 	if !m.enabled {
 		return
 	}
@@ -99,7 +99,7 @@ func (m *MatomoTracker) TrackEvent(r *http.Request, category, action, name strin
 	params.Set("url", name)
 
 	// Forward all query parameters with proper Matomo mappings
-	for key, values := range r.URL.Query() {
+	for key, values := range data.QueryParams {
 		if len(values) > 0 {
 			switch key {
 			case "utm_campaign":
@@ -129,19 +129,19 @@ func (m *MatomoTracker) TrackEvent(r *http.Request, category, action, name strin
 		}
 	}
 
-	// User information
-	params.Set("cip", getRemoteAddr(r))
+	// User information - already cleaned by main package
+	params.Set("cip", data.RemoteAddr)
 
-	if ua := r.Header.Get("User-Agent"); ua != "" {
-		params.Set("ua", ua)
+	if data.UserAgent != "" {
+		params.Set("ua", data.UserAgent)
 	}
 
-	if ref := r.Header.Get("Referer"); ref != "" {
-		params.Set("urlref", ref)
+	if data.Referer != "" {
+		params.Set("urlref", data.Referer)
 	}
 
-	if lang := r.Header.Get("Accept-Language"); lang != "" {
-		params.Set("lang", lang)
+	if data.Language != "" {
+		params.Set("lang", data.Language)
 	}
 
 	if m.token != "" {
@@ -277,18 +277,3 @@ func normalizeDomain(host string) string {
 	return strings.TrimPrefix(host, "www.")
 }
 
-func getRemoteAddr(r *http.Request) string {
-	// Check for reverse proxy headers first
-	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
-		// X-Forwarded-For can contain multiple IPs, take the first one
-		if idx := strings.Index(ip, ","); idx != -1 {
-			return strings.TrimSpace(ip[:idx])
-		}
-		return ip
-	}
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
-	}
-	// Fall back to RemoteAddr
-	return r.RemoteAddr
-}

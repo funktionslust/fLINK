@@ -13,10 +13,16 @@ func TestLoadConfig(t *testing.T) {
 	origPort := os.Getenv("PORT")
 	origMappings := os.Getenv("REDIRECT_MAPPINGS")
 	origForward := os.Getenv("FORWARD_QUERY_PARAMS")
+	origTrusted := os.Getenv("TRUSTED_PROXIES")
+	origMatomoURL := os.Getenv("MATOMO_URL")
+	origMatomoToken := os.Getenv("MATOMO_TOKEN")
 	defer func() {
 		os.Setenv("PORT", origPort)
 		os.Setenv("REDIRECT_MAPPINGS", origMappings)
 		os.Setenv("FORWARD_QUERY_PARAMS", origForward)
+		os.Setenv("TRUSTED_PROXIES", origTrusted)
+		os.Setenv("MATOMO_URL", origMatomoURL)
+		os.Setenv("MATOMO_TOKEN", origMatomoToken)
 	}()
 
 	tests := []struct {
@@ -81,7 +87,7 @@ func TestLoadConfig(t *testing.T) {
 			}
 
 			// Load config
-			cfg := loadConfig(tt.portFlag, tt.mappingsFlag, tt.forwardParamsFlag)
+			cfg := loadConfig(tt.portFlag, tt.mappingsFlag, tt.forwardParamsFlag, "", "", "")
 
 			// Check results
 			if cfg.port != tt.expectedPort {
@@ -259,6 +265,195 @@ func TestQueryParameterForwardingDisabled(t *testing.T) {
 			location := w.Header().Get("Location")
 			if location != tt.expectedLoc {
 				t.Errorf("Expected %s, got %s", tt.expectedLoc, location)
+			}
+		})
+	}
+}
+
+func TestConfigFlags(t *testing.T) {
+	// Save original env vars
+	origTrusted := os.Getenv("TRUSTED_PROXIES")
+	origMatomoURL := os.Getenv("MATOMO_URL")
+	origMatomoToken := os.Getenv("MATOMO_TOKEN")
+	defer func() {
+		os.Setenv("TRUSTED_PROXIES", origTrusted)
+		os.Setenv("MATOMO_URL", origMatomoURL)
+		os.Setenv("MATOMO_TOKEN", origMatomoToken)
+	}()
+
+	tests := []struct {
+		name                string
+		trustedProxiesFlag  string
+		matomoURLFlag       string
+		matomoTokenFlag     string
+		envVars             map[string]string
+		expectedTrusted     string
+		expectedMatomoURL   string
+		expectedMatomoToken string
+	}{
+		{
+			name:               "CLI flags override env vars",
+			trustedProxiesFlag: "10.0.0.0/8",
+			matomoURLFlag:      "https://cli.matomo.com",
+			matomoTokenFlag:    "cli-token-123",
+			envVars: map[string]string{
+				"TRUSTED_PROXIES": "192.168.0.0/16",
+				"MATOMO_URL":      "https://env.matomo.com",
+				"MATOMO_TOKEN":    "env-token-456",
+			},
+			expectedTrusted:     "10.0.0.0/8",
+			expectedMatomoURL:   "https://cli.matomo.com",
+			expectedMatomoToken: "cli-token-123",
+		},
+		{
+			name:               "Env vars when no CLI flags",
+			trustedProxiesFlag: "",
+			matomoURLFlag:      "",
+			matomoTokenFlag:    "",
+			envVars: map[string]string{
+				"TRUSTED_PROXIES": "172.16.0.0/12",
+				"MATOMO_URL":      "https://analytics.example.com",
+				"MATOMO_TOKEN":    "env-token-789",
+			},
+			expectedTrusted:     "172.16.0.0/12",
+			expectedMatomoURL:   "https://analytics.example.com",
+			expectedMatomoToken: "env-token-789",
+		},
+		{
+			name:                "Defaults when no env or CLI",
+			trustedProxiesFlag:  "",
+			matomoURLFlag:       "",
+			matomoTokenFlag:     "",
+			envVars:             map[string]string{},
+			expectedTrusted:     defaultTrustedProxies,
+			expectedMatomoURL:   "",
+			expectedMatomoToken: "",
+		},
+		{
+			name:               "Partial CLI flags",
+			trustedProxiesFlag: "127.0.0.1/32",
+			matomoURLFlag:      "",
+			matomoTokenFlag:    "",
+			envVars: map[string]string{
+				"MATOMO_URL":   "https://env.matomo.com",
+				"MATOMO_TOKEN": "env-token",
+			},
+			expectedTrusted:     "127.0.0.1/32",
+			expectedMatomoURL:   "https://env.matomo.com",
+			expectedMatomoToken: "env-token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Clear env vars
+			os.Unsetenv("TRUSTED_PROXIES")
+			os.Unsetenv("MATOMO_URL")
+			os.Unsetenv("MATOMO_TOKEN")
+
+			// Set test env vars
+			for k, v := range tt.envVars {
+				os.Setenv(k, v)
+			}
+
+			// Load config
+			cfg := loadConfig("8080", "test.txt", true, tt.trustedProxiesFlag, tt.matomoURLFlag, tt.matomoTokenFlag)
+
+			// Check results
+			if cfg.trustedProxies != tt.expectedTrusted {
+				t.Errorf("Expected trustedProxies %s, got %s", tt.expectedTrusted, cfg.trustedProxies)
+			}
+			if cfg.matomoURL != tt.expectedMatomoURL {
+				t.Errorf("Expected matomoURL %s, got %s", tt.expectedMatomoURL, cfg.matomoURL)
+			}
+			if cfg.matomoToken != tt.expectedMatomoToken {
+				t.Errorf("Expected matomoToken %s, got %s", tt.expectedMatomoToken, cfg.matomoToken)
+			}
+		})
+	}
+}
+
+func TestGetEnvOrFile(t *testing.T) {
+	// Save original env vars
+	origValue := os.Getenv("TEST_VAR")
+	origFile := os.Getenv("TEST_VAR_FILE")
+	defer func() {
+		os.Setenv("TEST_VAR", origValue)
+		os.Setenv("TEST_VAR_FILE", origFile)
+	}()
+
+	tests := []struct {
+		name     string
+		envValue string
+		fileVar  string
+		fileData string
+		expected string
+	}{
+		{
+			name:     "Direct env var takes precedence",
+			envValue: "direct-value",
+			fileVar:  "/tmp/test-file",
+			fileData: "file-value",
+			expected: "direct-value",
+		},
+		{
+			name:     "File value when no direct env",
+			envValue: "",
+			fileVar:  "", // Will be set to temp file path
+			fileData: "secret-from-file\n",
+			expected: "secret-from-file",
+		},
+		{
+			name:     "Empty when neither set",
+			envValue: "",
+			fileVar:  "",
+			fileData: "",
+			expected: "",
+		},
+		{
+			name:     "Empty when file doesn't exist",
+			envValue: "",
+			fileVar:  "/non/existent/file",
+			fileData: "",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Clear env vars
+			os.Unsetenv("TEST_VAR")
+			os.Unsetenv("TEST_VAR_FILE")
+
+			// Set direct env var if specified
+			if tt.envValue != "" {
+				os.Setenv("TEST_VAR", tt.envValue)
+			}
+
+			// Create temp file if needed
+			if tt.fileData != "" && tt.fileVar == "" {
+				tmpfile, err := os.CreateTemp("", "test-env-file")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer os.Remove(tmpfile.Name())
+
+				if _, err := tmpfile.Write([]byte(tt.fileData)); err != nil {
+					t.Fatal(err)
+				}
+				if err := tmpfile.Close(); err != nil {
+					t.Fatal(err)
+				}
+
+				os.Setenv("TEST_VAR_FILE", tmpfile.Name())
+			} else if tt.fileVar != "" {
+				os.Setenv("TEST_VAR_FILE", tt.fileVar)
+			}
+
+			// Test getEnvOrFile
+			result := getEnvOrFile("TEST_VAR")
+			if result != tt.expected {
+				t.Errorf("Expected %q, got %q", tt.expected, result)
 			}
 		})
 	}

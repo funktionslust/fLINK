@@ -26,6 +26,9 @@ var (
 	date    = "unknown"
 )
 
+// Default trusted proxy ranges (RFC1918 private networks + loopback)
+const defaultTrustedProxies = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128"
+
 // redirectRule represents a single redirect mapping with destination URL and HTTP status code.
 type redirectRule struct {
 	url       string // Destination URL
@@ -96,6 +99,8 @@ type config struct {
 	mappingSource      string
 	forwardQueryParams bool
 	trustedProxies     string // Comma-separated CIDR ranges of trusted proxies
+	matomoURL          string
+	matomoToken        string
 }
 
 var (
@@ -120,6 +125,9 @@ func main() {
 		portFlag          = flag.String("port", "", "Server port")
 		mappingsFlag      = flag.String("mappings", "", "File path, URL, or inline mappings")
 		forwardParamsFlag = flag.Bool("forward-query-params", true, "Forward query parameters to destination")
+		trustedProxiesFlag = flag.String("trusted-proxies", "", "Comma-separated CIDR ranges of trusted proxies")
+		matomoURLFlag     = flag.String("matomo-url", "", "Matomo analytics URL")
+		matomoTokenFlag   = flag.String("matomo-token", "", "Matomo API token")
 		versionFlag       = flag.Bool("version", false, "Show version information")
 		helpFlag          = flag.Bool("help", false, "Show help message")
 	)
@@ -146,11 +154,13 @@ func main() {
 	printBanner()
 
 	// Load configuration (CLI flags override environment variables)
-	cfg = loadConfig(*portFlag, *mappingsFlag, *forwardParamsFlag)
-	printConfig()
+	cfg = loadConfig(*portFlag, *mappingsFlag, *forwardParamsFlag, *trustedProxiesFlag, *matomoURLFlag, *matomoTokenFlag)
 
-	// Initialize tracking system
-	initTracking()
+	// Initialize tracking system with config
+	initTracking(cfg)
+	
+	// Print configuration after all systems are initialized
+	printConfig()
 
 	// Initialize trusted proxy networks
 	if err := initTrustedProxies(cfg.trustedProxies); err != nil {
@@ -180,7 +190,7 @@ func main() {
 
 // loadConfig loads configuration from CLI flags and environment variables
 // CLI flags take precedence over environment variables
-func loadConfig(portFlag, mappingsFlag string, forwardParamsFlag bool) config {
+func loadConfig(portFlag, mappingsFlag string, forwardParamsFlag bool, trustedProxiesFlag, matomoURLFlag, matomoTokenFlag string) config {
 	c := config{}
 
 	// Port: CLI flag > env var > default
@@ -205,11 +215,29 @@ func loadConfig(portFlag, mappingsFlag string, forwardParamsFlag bool) config {
 		c.forwardQueryParams = getEnvBool("FORWARD_QUERY_PARAMS", true)
 	}
 
-	// Trusted proxies: comma-separated CIDR ranges
-	c.trustedProxies = os.Getenv("TRUSTED_PROXIES")
-	if c.trustedProxies == "" {
-		// Default to common private network ranges
-		c.trustedProxies = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128"
+	// Trusted proxies: CLI flag takes precedence
+	if trustedProxiesFlag != "" {
+		c.trustedProxies = trustedProxiesFlag
+	} else {
+		c.trustedProxies = os.Getenv("TRUSTED_PROXIES")
+		if c.trustedProxies == "" {
+			// Default to common private network ranges
+			c.trustedProxies = defaultTrustedProxies
+		}
+	}
+
+	// Matomo URL: CLI flag takes precedence
+	if matomoURLFlag != "" {
+		c.matomoURL = matomoURLFlag
+	} else {
+		c.matomoURL = getEnvOrFile("MATOMO_URL")
+	}
+
+	// Matomo Token: CLI flag takes precedence
+	if matomoTokenFlag != "" {
+		c.matomoToken = matomoTokenFlag
+	} else {
+		c.matomoToken = getEnvOrFile("MATOMO_TOKEN")
 	}
 
 	if c.mappingSource == "" {
@@ -258,11 +286,15 @@ OPTIONS:
   -port PORT               Server port (default: 8080)
   -mappings PATH|URL|DATA  File path, URL, or inline mappings (required)
   -forward-query-params    Forward query parameters to destination (default: true)
+  -trusted-proxies CIDRS   Comma-separated CIDR ranges of trusted proxies
+  -matomo-url URL          Matomo analytics URL
+  -matomo-token TOKEN      Matomo API token
 
 ENVIRONMENT VARIABLES:
   REDIRECT_MAPPINGS        File path, URL, or inline mappings
   PORT                     Server port
   FORWARD_QUERY_PARAMS     Forward query parameters to destination
+  TRUSTED_PROXIES          Comma-separated CIDR ranges of trusted proxies
   MATOMO_URL               Matomo analytics URL (optional)
   MATOMO_TOKEN             Matomo API token (optional)
 
@@ -282,11 +314,38 @@ EXAMPLES:
   # Disable query parameter forwarding
   flink -mappings redirects.txt -forward-query-params=false
 
+  # With Matomo analytics
+  flink -mappings redirects.txt -matomo-url https://analytics.example.com -matomo-token your-token
+
+  # Custom trusted proxies
+  flink -mappings redirects.txt -trusted-proxies "10.0.0.0/8,192.168.1.0/24"
+
   # Using environment variables
   REDIRECT_MAPPINGS=/etc/flink/redirects.txt PORT=8080 flink
 
 For more information, visit: https://github.com/funktionslust/fLINK
 `, version)
+}
+
+// getEnvOrFile reads a value from environment variable or from a file specified by envVar_FILE.
+// This pattern is commonly used in containerized environments for secret management.
+func getEnvOrFile(envVar string) string {
+	// First try to get value directly from environment variable
+	if value := os.Getenv(envVar); value != "" {
+		return value
+	}
+
+	// Then try to read from file specified in envVar_FILE
+	if fileVar := os.Getenv(envVar + "_FILE"); fileVar != "" {
+		content, err := os.ReadFile(fileVar)
+		if err != nil {
+			// Silent fail - logging happens in the tracking package
+			return ""
+		}
+		return strings.TrimSpace(string(content))
+	}
+
+	return ""
 }
 
 // getEnvBool reads a boolean environment variable with a default value
@@ -805,15 +864,18 @@ func getHostname(r *http.Request) string {
 
 // getPathPrefix extracts the original path prefix from reverse proxy headers.
 func getPathPrefix(r *http.Request) string {
-	// Check for X-Forwarded-Prefix header (used by many reverse proxies)
-	if prefix := r.Header.Get("X-Forwarded-Prefix"); prefix != "" {
-		return prefix
-	}
-	// Check for X-Forwarded-Path which some proxies use
-	if path := r.Header.Get("X-Forwarded-Path"); path != "" {
-		// Extract just the prefix part if the full path is provided
-		if idx := strings.LastIndex(path, "/"); idx > 0 {
-			return path[:idx]
+	// Only trust proxy headers if request is from a trusted proxy
+	if isTrustedProxy(r.RemoteAddr) {
+		// Check for X-Forwarded-Prefix header (used by many reverse proxies)
+		if prefix := r.Header.Get("X-Forwarded-Prefix"); prefix != "" {
+			return prefix
+		}
+		// Check for X-Forwarded-Path which some proxies use
+		if path := r.Header.Get("X-Forwarded-Path"); path != "" {
+			// Extract just the prefix part if the full path is provided
+			if idx := strings.LastIndex(path, "/"); idx > 0 {
+				return path[:idx]
+			}
 		}
 	}
 	return ""

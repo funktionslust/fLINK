@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -490,20 +491,27 @@ func TestGetHostname(t *testing.T) {
 }
 
 func TestGetPathPrefix(t *testing.T) {
+	// Set up trusted proxies for testing
+	parseTrustedProxies("127.0.0.1")
+
 	tests := []struct {
-		name     string
-		headers  map[string]string
-		expected string
+		name       string
+		headers    map[string]string
+		remoteAddr string
+		expected   string
 	}{
-		{"No prefix", map[string]string{}, ""},
-		{"X-Forwarded-Prefix", map[string]string{"X-Forwarded-Prefix": "/s"}, "/s"},
-		{"X-Forwarded-Path full", map[string]string{"X-Forwarded-Path": "/s/test"}, "/s"},
-		{"X-Forwarded-Path single", map[string]string{"X-Forwarded-Path": "/test"}, ""},
+		{"No prefix", map[string]string{}, "127.0.0.1:1234", ""},
+		{"X-Forwarded-Prefix from trusted proxy", map[string]string{"X-Forwarded-Prefix": "/s"}, "127.0.0.1:1234", "/s"},
+		{"X-Forwarded-Path full from trusted proxy", map[string]string{"X-Forwarded-Path": "/s/test"}, "127.0.0.1:1234", "/s"},
+		{"X-Forwarded-Path single from trusted proxy", map[string]string{"X-Forwarded-Path": "/test"}, "127.0.0.1:1234", ""},
+		{"X-Forwarded-Prefix from untrusted proxy", map[string]string{"X-Forwarded-Prefix": "/evil"}, "8.8.8.8:443", ""},
+		{"X-Forwarded-Path from untrusted proxy", map[string]string{"X-Forwarded-Path": "/evil/path"}, "8.8.8.8:443", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/test", nil)
+			req.RemoteAddr = tt.remoteAddr
 			for key, value := range tt.headers {
 				req.Header.Set(key, value)
 			}
@@ -1005,5 +1013,116 @@ func TestLoadInlineMappings(t *testing.T) {
 	rule2, ok2, _ := ruleSet.Match("demo")
 	if !ok2 || rule2.url != "https://demo.com" || rule2.status != 301 {
 		t.Errorf("Expected demo rule with 301 status")
+	}
+}
+
+func TestEmptyTrustedProxies(t *testing.T) {
+	// Test that empty trusted proxies string doesn't break anything
+	tests := []struct {
+		name           string
+		trustedProxies string
+		remoteAddr     string
+		expectedTrust  bool
+	}{
+		{
+			name:           "Empty string means no trusted proxies",
+			trustedProxies: "",
+			remoteAddr:     "127.0.0.1:1234",
+			expectedTrust:  false,
+		},
+		{
+			name:           "Whitespace only means no trusted proxies",
+			trustedProxies: "   ",
+			remoteAddr:     "127.0.0.1:1234",
+			expectedTrust:  false,
+		},
+		{
+			name:           "Comma only is ignored",
+			trustedProxies: ",,,",
+			remoteAddr:     "127.0.0.1:1234",
+			expectedTrust:  false,
+		},
+		{
+			name:           "Valid CIDR works",
+			trustedProxies: "127.0.0.1/32",
+			remoteAddr:     "127.0.0.1:1234",
+			expectedTrust:  true,
+		},
+		{
+			name:           "Multiple empty segments are ignored",
+			trustedProxies: "127.0.0.1/32,,, ,192.168.1.0/24",
+			remoteAddr:     "192.168.1.100:1234",
+			expectedTrust:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset the trusted proxy checker
+			trustedProxyChecker.once = sync.Once{}
+			trustedProxyChecker.nets = nil
+
+			// Initialize with test configuration
+			err := initTrustedProxies(tt.trustedProxies)
+			if err != nil {
+				t.Fatalf("initTrustedProxies failed: %v", err)
+			}
+
+			// Test if the proxy is trusted
+			result := isTrustedProxy(tt.remoteAddr)
+			if result != tt.expectedTrust {
+				t.Errorf("Expected isTrustedProxy(%s) = %v, got %v", tt.remoteAddr, tt.expectedTrust, result)
+			}
+		})
+	}
+}
+
+func TestTrustedProxyInvalidCIDR(t *testing.T) {
+	tests := []struct {
+		name           string
+		trustedProxies string
+		expectError    bool
+	}{
+		{
+			name:           "Valid CIDR",
+			trustedProxies: "10.0.0.0/8",
+			expectError:    false,
+		},
+		{
+			name:           "Valid single IP",
+			trustedProxies: "192.168.1.1",
+			expectError:    false,
+		},
+		{
+			name:           "Invalid CIDR",
+			trustedProxies: "10.0.0.0/33",
+			expectError:    true,
+		},
+		{
+			name:           "Invalid IP",
+			trustedProxies: "999.999.999.999",
+			expectError:    true,
+		},
+		{
+			name:           "Mixed valid and invalid",
+			trustedProxies: "10.0.0.0/8,invalid,192.168.1.0/24",
+			expectError:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset the trusted proxy checker
+			trustedProxyChecker.once = sync.Once{}
+			trustedProxyChecker.nets = nil
+
+			err := initTrustedProxies(tt.trustedProxies)
+			if tt.expectError && err == nil {
+				t.Error("Expected error but got none")
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+		})
 	}
 }

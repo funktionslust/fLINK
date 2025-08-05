@@ -1,9 +1,8 @@
 package main
 
 import (
+	"log"
 	"net/http"
-	"os"
-	"strings"
 
 	"github.com/funktionslust/fLINK/tracking"
 )
@@ -12,39 +11,38 @@ import (
 var tracker tracking.Tracker
 
 // initTracking initializes the tracking system based on configuration
-func initTracking() {
-	cfg := tracking.Config{
-		MatomoURL:   getEnvOrFile("MATOMO_URL"),
-		MatomoToken: getEnvOrFile("MATOMO_TOKEN"),
+func initTracking(cfg config) {
+	// Build tracking configuration from main config
+	trackingConfig := tracking.Config{
+		MatomoURL:   cfg.matomoURL,
+		MatomoToken: cfg.matomoToken,
 	}
 
-	tracker = tracking.New(cfg)
+	// The tracking package will automatically detect which service to use
+	// based on which credentials are provided
+	tracker = tracking.New(trackingConfig)
+
+	// Log which tracking is enabled (if any)
+	if tracker.IsEnabled() {
+		log.Printf("Tracking enabled: %s", tracker.Name())
+	} else {
+		log.Printf("Tracking disabled")
+	}
 }
 
 // trackEvent is a convenience function to track events using the active tracker
 func trackEvent(r *http.Request, category, action, name string) {
 	if tracker != nil && tracker.IsEnabled() {
-		go tracker.TrackEvent(r, category, action, name)
-	}
-}
-
-// getEnvOrFile reads a value from environment variable or from a file specified by envVar_FILE.
-// This pattern is commonly used in containerized environments for secret management.
-func getEnvOrFile(envVar string) string {
-	// First try to get value directly from environment variable
-	if value := os.Getenv(envVar); value != "" {
-		return value
-	}
-
-	// Then try to read from file specified in envVar_FILE
-	if fileVar := os.Getenv(envVar + "_FILE"); fileVar != "" {
-		content, err := os.ReadFile(fileVar)
-		if err != nil {
-			// Silent fail - logging happens in the tracking package
-			return ""
+		// Build event data with cleaned information
+		data := tracking.EventData{
+			RemoteAddr:  getRemoteAddr(r), // clean using trusted proxy
+			UserAgent:   r.Header.Get("User-Agent"),
+			Referer:     r.Header.Get("Referer"),
+			Language:    r.Header.Get("Accept-Language"),
+			URL:         r.URL.String(),
+			QueryParams: r.URL.Query(),
 		}
-		return strings.TrimSpace(string(content))
-	}
 
-	return ""
+		go tracker.TrackEvent(data, category, action, name)
+	}
 }

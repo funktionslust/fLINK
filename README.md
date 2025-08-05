@@ -7,6 +7,8 @@ Battle-tested in production with minimal resource usage and excellent performanc
 
 Designed as a simpler, more accessible alternative to Shlink, YOURLS, and Polr - no database, no complex setup, just a single binary or Docker container.
 
+[![GitHub Release](https://img.shields.io/github/v/release/funktionslust/fLINK)](https://github.com/funktionslust/fLINK/releases/latest)
+[![Docker Version](https://img.shields.io/docker/v/funktionslust/flink/latest?label=docker)](https://hub.docker.com/r/funktionslust/flink)
 [![Docker Pulls](https://img.shields.io/docker/pulls/funktionslust/flink)](https://hub.docker.com/r/funktionslust/flink)
 [![GitHub Stars](https://img.shields.io/github/stars/funktionslust/fLINK)](https://github.com/funktionslust/fLINK)
 [![License](https://img.shields.io/github/license/funktionslust/fLINK)](https://github.com/funktionslust/fLINK/blob/main/LICENSE)
@@ -58,6 +60,12 @@ go build -o flink .
 
 # Disable query parameter forwarding
 ./flink -mappings redirects.txt -forward-query-params=false
+
+# With Matomo analytics tracking
+./flink -mappings redirects.txt -matomo-url https://analytics.example.com -matomo-token your-api-token
+
+# Custom trusted proxy configuration
+./flink -mappings redirects.txt -trusted-proxies "10.0.0.0/8,192.168.1.0/24"
 ```
 
 ### Using a Configuration File
@@ -236,6 +244,9 @@ api/v2/*=https://v2.api.com/*
 | `-mappings` | File path, URL, or inline mappings | - |
 | `-port` | Server port | 8080 |
 | `-forward-query-params` | Forward query parameters to destination | true |
+| `-trusted-proxies` | Comma-separated CIDR ranges of trusted proxies | Private networks |
+| `-matomo-url` | Matomo analytics URL | - |
+| `-matomo-token` | Matomo API token | - |
 | `-help` | Show help message | - |
 | `-version` | Show version information | - |
 
