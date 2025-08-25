@@ -276,4 +276,3 @@ func normalizeDomain(host string) string {
 	host = strings.ToLower(host)
 	return strings.TrimPrefix(host, "www.")
 }
-

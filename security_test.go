@@ -1,6 +1,6 @@
 // security_test.go - Security-related tests including:
 // - Direct access scenarios
-// - Trusted proxy validation  
+// - Trusted proxy validation
 // - IP spoofing prevention
 // - Tracking data cleaning
 // - Security headers
@@ -11,17 +11,15 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
-	
+
 	"github.com/funktionslust/fLINK/tracking"
 )
 
 func TestDirectUserAccess(t *testing.T) {
-	// Save and restore the trusted proxy checker state
-	oldOnce := trustedProxyChecker.once
-	oldNets := trustedProxyChecker.nets
+	// Reset trusted proxy checker state on exit
 	defer func() {
-		trustedProxyChecker.once = oldOnce
-		trustedProxyChecker.nets = oldNets
+		trustedProxyChecker.once = sync.Once{}
+		trustedProxyChecker.nets = nil
 	}()
 
 	// Reset state before test
@@ -91,12 +89,10 @@ func TestDirectUserAccess(t *testing.T) {
 }
 
 func TestDirectAccessRecommendedConfig(t *testing.T) {
-	// Save and restore the trusted proxy checker state
-	oldOnce := trustedProxyChecker.once
-	oldNets := trustedProxyChecker.nets
+	// Reset trusted proxy checker state on exit
 	defer func() {
-		trustedProxyChecker.once = oldOnce
-		trustedProxyChecker.nets = oldNets
+		trustedProxyChecker.once = sync.Once{}
+		trustedProxyChecker.nets = nil
 	}()
 
 	// Reset state before test
@@ -152,15 +148,16 @@ func TestDirectAccessRecommendedConfig(t *testing.T) {
 		})
 	}
 }
+
 // ==================== Tests moved from tracking_test.go ====================
 
 // mockTracker implements the Tracker interface for testing
 type mockTracker struct {
-	enabled        bool
-	lastEventData  tracking.EventData
-	lastCategory   string
-	lastAction     string
-	lastName       string
+	enabled       bool
+	lastEventData tracking.EventData
+	lastCategory  string
+	lastAction    string
+	lastName      string
 }
 
 func (m *mockTracker) TrackEvent(data tracking.EventData, category, action, name string) {
@@ -185,12 +182,10 @@ func TestTrackEventCleansRemoteAddr(t *testing.T) {
 	tracker = mock
 	defer func() { tracker = oldTracker }()
 
-	// Save and restore the trusted proxy checker state
-	oldOnce := trustedProxyChecker.once
-	oldNets := trustedProxyChecker.nets
+	// Reset trusted proxy checker state on exit
 	defer func() {
-		trustedProxyChecker.once = oldOnce
-		trustedProxyChecker.nets = oldNets
+		trustedProxyChecker.once = sync.Once{}
+		trustedProxyChecker.nets = nil
 	}()
 
 	// Reset and initialize trusted proxies for this test
@@ -263,7 +258,7 @@ func TestTrackEventCleansRemoteAddr(t *testing.T) {
 					URL:         req.URL.String(),
 					QueryParams: req.URL.Query(),
 				}
-				
+
 				tracker.TrackEvent(data, "test", "action", "name")
 			}
 
@@ -305,4 +300,3 @@ func TestTrackEventNilTracker(t *testing.T) {
 	req := httptest.NewRequest("GET", "/test", nil)
 	trackEvent(req, "test", "action", "name")
 }
-

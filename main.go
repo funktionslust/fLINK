@@ -122,14 +122,14 @@ var (
 func main() {
 	// Define command-line flags
 	var (
-		portFlag          = flag.String("port", "", "Server port")
-		mappingsFlag      = flag.String("mappings", "", "File path, URL, or inline mappings")
-		forwardParamsFlag = flag.Bool("forward-query-params", true, "Forward query parameters to destination")
+		portFlag           = flag.String("port", "", "Server port")
+		mappingsFlag       = flag.String("mappings", "", "File path, URL, or inline mappings")
+		forwardParamsFlag  = flag.Bool("forward-query-params", true, "Forward query parameters to destination")
 		trustedProxiesFlag = flag.String("trusted-proxies", "", "Comma-separated CIDR ranges of trusted proxies")
-		matomoURLFlag     = flag.String("matomo-url", "", "Matomo analytics URL")
-		matomoTokenFlag   = flag.String("matomo-token", "", "Matomo API token")
-		versionFlag       = flag.Bool("version", false, "Show version information")
-		helpFlag          = flag.Bool("help", false, "Show help message")
+		matomoURLFlag      = flag.String("matomo-url", "", "Matomo analytics URL")
+		matomoTokenFlag    = flag.String("matomo-token", "", "Matomo API token")
+		versionFlag        = flag.Bool("version", false, "Show version information")
+		helpFlag           = flag.Bool("help", false, "Show help message")
 	)
 
 	// Custom usage message
@@ -158,7 +158,7 @@ func main() {
 
 	// Initialize tracking system with config
 	initTracking(cfg)
-	
+
 	// Print configuration after all systems are initialized
 	printConfig()
 

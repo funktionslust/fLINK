@@ -4,11 +4,11 @@ package tracking
 
 // EventData contains the data needed for tracking an event
 type EventData struct {
-	RemoteAddr string            // The real client IP address (already cleaned)
-	UserAgent  string            // User-Agent header
-	Referer    string            // Referer header
-	Language   string            // Accept-Language header
-	URL        string            // The full URL being accessed
+	RemoteAddr  string              // The real client IP address (already cleaned)
+	UserAgent   string              // User-Agent header
+	Referer     string              // Referer header
+	Language    string              // Accept-Language header
+	URL         string              // The full URL being accessed
 	QueryParams map[string][]string // Query parameters for the request
 }
 

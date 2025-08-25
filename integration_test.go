@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
-	
+
 	"github.com/funktionslust/fLINK/tracking"
 )
 
@@ -44,12 +44,11 @@ func (c *captureTracker) getLastEventData() tracking.EventData {
 func TestEndToEndDirectAccess(t *testing.T) {
 	// Save and restore state
 	oldTracker := tracker
-	oldOnce := trustedProxyChecker.once
-	oldNets := trustedProxyChecker.nets
 	defer func() {
 		tracker = oldTracker
-		trustedProxyChecker.once = oldOnce
-		trustedProxyChecker.nets = oldNets
+		// Reset trustedProxyChecker to clean state
+		trustedProxyChecker.once = sync.Once{}
+		trustedProxyChecker.nets = nil
 	}()
 
 	// Setup capture tracker
@@ -143,12 +142,10 @@ func TestEndToEndDirectAccess(t *testing.T) {
 }
 
 func TestEndToEndQRCode(t *testing.T) {
-	// Save and restore state
-	oldOnce := trustedProxyChecker.once
-	oldNets := trustedProxyChecker.nets
+	// Save and restore state - reset to clean state on exit
 	defer func() {
-		trustedProxyChecker.once = oldOnce
-		trustedProxyChecker.nets = oldNets
+		trustedProxyChecker.once = sync.Once{}
+		trustedProxyChecker.nets = nil
 	}()
 
 	// Reset and configure for direct access
